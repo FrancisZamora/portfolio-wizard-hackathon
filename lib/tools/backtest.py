@@ -13,6 +13,7 @@ parser.add_argument("--short_weights", type=int, nargs="+")
 parser.add_argument("--benchmark", type=str, default="^GSPC")
 parser.add_argument("--start_date", type=str, default="2023-01-01")
 parser.add_argument("--end_date", type=str, default="2024-01-01")
+parser.add_argument("--visualize", type=bool, default=True)
 args = parser.parse_args()
 
 
@@ -109,5 +110,7 @@ if __name__ == "__main__":
                       start_date=args.start_date, 
                       end_date=args.end_date)
   backtest.run()
-  backtest.plot_results()
-  plt.show()
+  
+  if args.visualize:
+    backtest.plot_results()
+    plt.show()
