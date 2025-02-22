@@ -33,85 +33,46 @@ export function GroqChat() {
     }
   }, [messages]);
 
-  const playNextAudioChunk = async () => {
-    if (audioQueueRef.current.length === 0 || isPlayingRef.current) return;
-    
-    isPlayingRef.current = true;
-    // Take multiple sentences up to a reasonable length
-    let textToSpeak = "";
-    const maxChunks = Math.min(3, audioQueueRef.current.length); // Process up to 3 sentences at once
-    for (let i = 0; i < maxChunks; i++) {
-      const nextChunk = audioQueueRef.current[0];
-      if (textToSpeak.length + nextChunk.length > 200) break; // Reduced from 250 to 200
-      textToSpeak += (textToSpeak ? " " : "") + audioQueueRef.current.shift();
-    }
+  const playNextAudioChunk = async (text: string) => {
+    if (!text.trim()) return;
     
     try {
       // Cleanup previous audio if exists
       if (audioRef.current) {
-        const oldAudio = audioRef.current;
-        oldAudio.pause();
-        oldAudio.src = '';
-        oldAudio.load();
+        audioRef.current.pause();
+        audioRef.current.src = '';
+        audioRef.current.load();
         audioRef.current = null;
       }
 
       const response = await fetch("/api/text-to-speech", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: textToSpeak.trim() }),
+        body: JSON.stringify({ text: text.trim() }),
       });
 
       if (!response.ok) {
-        throw new Error("Failed to generate speech");
+        throw new Error(`Failed to generate speech: ${response.status}`);
       }
 
       const audioBlob = await response.blob();
       const audioUrl = URL.createObjectURL(audioBlob);
       const audio = new Audio(audioUrl);
-      
-      // Set up event listeners before setting audioRef.current
-      audio.onplay = () => {
-        setIsPlaying(true);
-        setCurrentPlayingIndex(messages.length - 1);
-      };
 
       audio.onended = () => {
         URL.revokeObjectURL(audioUrl);
-        if (audioRef.current === audio) {
-          audioRef.current = null;
-          setIsPlaying(false);
-          setCurrentPlayingIndex(null);
-          isPlayingRef.current = false;
-          
-          // Small delay before playing next chunk to prevent overlapping
-          if (audioQueueRef.current.length > 0) {
-            setTimeout(() => playNextAudioChunk(), 50);
-          }
-        }
+        audioRef.current = null;
+        setIsPlaying(false);
+        setCurrentPlayingIndex(null);
       };
 
-      audio.onerror = () => {
-        console.error("Audio playback error");
-        URL.revokeObjectURL(audioUrl);
-        if (audioRef.current === audio) {
-          audioRef.current = null;
-          setIsPlaying(false);
-          setCurrentPlayingIndex(null);
-          isPlayingRef.current = false;
-        }
-        audioQueueRef.current = [];
-      };
-
-      // Only set the ref after all event listeners are set up
       audioRef.current = audio;
+      setIsPlaying(true);
       await audio.play();
     } catch (error) {
-      console.error("Error playing audio:", error);
-      isPlayingRef.current = false;
+      console.error("[AUDIO] Error:", error);
       setIsPlaying(false);
-      setCurrentPlayingIndex(null);
-      audioQueueRef.current = [];
+      audioRef.current = null;
     }
   };
 
@@ -124,28 +85,18 @@ export function GroqChat() {
     
     // Cleanup any existing audio
     if (audioRef.current) {
-      const oldAudio = audioRef.current;
-      oldAudio.pause();
-      oldAudio.src = '';
-      oldAudio.load();
+      audioRef.current.pause();
+      audioRef.current.src = '';
+      audioRef.current.load();
       audioRef.current = null;
     }
-    audioQueueRef.current = [];
     setIsPlaying(false);
-    setCurrentPlayingIndex(null);
-    isPlayingRef.current = false;
     
     // Add user message immediately
     setMessages((prev) => [...prev, { role: "user", content: userMessage }]);
     
     setIsLoading(true);
     try {
-      const assistantMessageIndex = messages.length + 1;
-      let fullResponse = "";
-      let currentSentence = "";
-      let sentenceBuffer: string[] = [];
-      setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
-
       const response = await fetch("/api/groq-chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -156,93 +107,11 @@ export function GroqChat() {
 
       if (!response.ok) throw new Error(response.statusText);
 
-      const reader = response.body!.getReader();
-      const decoder = new TextDecoder();
-
-      const processSentenceBuffer = () => {
-        if (sentenceBuffer.length > 0) {
-          const text = sentenceBuffer.join('. ').replace(/\.\s*\./g, '.').trim();
-          if (text) {
-            audioQueueRef.current.push(text);
-            if (!isPlayingRef.current && !audioRef.current) {
-              playNextAudioChunk();
-            }
-          }
-          sentenceBuffer = [];
-        }
-      };
-
-      // Process the stream
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
-          if (currentSentence.trim()) {
-            sentenceBuffer.push(currentSentence.trim());
-          }
-          processSentenceBuffer();
-          break;
-        }
-
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n');
-        
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            const data = line.slice(5).trim();
-            if (!data || data === '[DONE]') continue;
-            
-            try {
-              const { content } = JSON.parse(data);
-              if (content) {
-                currentSentence += content;
-                fullResponse += content;
-                
-                // Update the message immediately
-                setMessages((prev) => {
-                  const newMessages = [...prev];
-                  newMessages[assistantMessageIndex] = {
-                    role: "assistant",
-                    content: fullResponse,
-                  };
-                  return newMessages;
-                });
-
-                // Check for complete sentences
-                let sentenceMatch;
-                const sentenceRegex = /[^.!?]+[.!?]+/g;
-                
-                while ((sentenceMatch = sentenceRegex.exec(currentSentence)) !== null) {
-                  const completeSentence = sentenceMatch[0];
-                  const endIndex = sentenceMatch.index + completeSentence.length;
-                  
-                  // Add to sentence buffer
-                  sentenceBuffer.push(completeSentence.trim());
-                  
-                  // Process buffer if we have enough sentences
-                  if (sentenceBuffer.length >= 2) {
-                    processSentenceBuffer();
-                  }
-                  
-                  // Keep any remaining text for the next sentence
-                  currentSentence = currentSentence.slice(endIndex);
-                }
-              }
-            } catch (e) {
-              console.error('Error parsing JSON:', e, 'Data:', data);
-            }
-          }
-        }
-      }
-
-      // Final message update
-      setMessages((prev) => {
-        const newMessages = [...prev];
-        newMessages[assistantMessageIndex] = {
-          role: "assistant",
-          content: fullResponse,
-        };
-        return newMessages;
-      });
+      const data = await response.json();
+      const assistantMessage = { role: "assistant" as const, content: data.content };
+      
+      setMessages((prev) => [...prev, assistantMessage]);
+      playNextAudioChunk(data.content);
 
     } catch (error) {
       console.error("Error:", error);
@@ -261,15 +130,12 @@ export function GroqChat() {
   const handleTranscription = async (text: string) => {
     if (!text.trim()) return;
     
-    // Clear audio queue and stop any playing audio
-    audioQueueRef.current = [];
+    // Clear audio and stop any playing audio
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current = null;
     }
     setIsPlaying(false);
-    setCurrentPlayingIndex(null);
-    isPlayingRef.current = false;
 
     const userMessage: Message = { role: 'user', content: text };
     setMessages(prev => [...prev, userMessage]);
@@ -291,34 +157,34 @@ export function GroqChat() {
       }
 
       const data = await response.json();
-      const assistantMessage: Message = { role: 'assistant', content: data.content };
+      const assistantMessage = { role: "assistant" as const, content: data.content };
+      
       setMessages(prev => [...prev, assistantMessage]);
+      playNextAudioChunk(data.content);
+
     } catch (error) {
       console.error('Error:', error);
-      // Handle error appropriately
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: "I apologize, but I encountered an error. Please try again.",
+        },
+      ]);
     } finally {
       setIsLoading(false);
     }
   };
 
   const toggleAudio = (text: string, index: number) => {
-    if (audioRef.current) {
-      if (isPlaying && currentPlayingIndex === index) {
-        audioRef.current.pause();
-        audioRef.current = null;
-        setIsPlaying(false);
-        setCurrentPlayingIndex(null);
-        isPlayingRef.current = false;
-        audioQueueRef.current = [];
-      } else {
-        // Clear existing queue and start new playback
-        audioQueueRef.current = [text];
-        playNextAudioChunk();
-      }
+    if (audioRef.current && isPlaying) {
+      audioRef.current.pause();
+      audioRef.current = null;
+      setIsPlaying(false);
+      setCurrentPlayingIndex(null);
     } else {
-      // Start new playback
-      audioQueueRef.current = [text];
-      playNextAudioChunk();
+      setCurrentPlayingIndex(index);
+      playNextAudioChunk(text);
     }
   };
 

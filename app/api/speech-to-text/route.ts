@@ -39,6 +39,8 @@ export async function POST(req: Request) {
     // Clean up the temporary file
     await writeFile(tempFilePath, '').catch(console.error);
 
+    console.log("[TRANSCRIPTION]", transcription);
+
     return NextResponse.json({ text: transcription.text });
   } catch (error) {
     console.error("[SPEECH_TO_TEXT_ERROR]", error);
