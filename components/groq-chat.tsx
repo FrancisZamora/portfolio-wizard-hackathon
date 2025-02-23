@@ -8,6 +8,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Volume2, VolumeX } from 'lucide-react';
 import { FloatingMic } from "@/components/floating-mic";
 import { motion, AnimatePresence } from "framer-motion";
+import { StockPanel } from "@/components/stock-panel";
 
 interface Message {
   role: 'user' | 'assistant';
@@ -434,6 +435,11 @@ export function GroqChat() {
                       border-r border-violet-500/20 shadow-lg
                       bg-gradient-to-br from-violet-500/5 to-fuchsia-500/5
                       backdrop-blur-sm rounded-none">
+        <div className="p-4 border-b border-violet-500/20">
+          <h1 className="text-2xl font-semibold bg-gradient-to-r from-violet-500 to-fuchsia-500 bg-clip-text text-transparent">
+            Chat
+          </h1>
+        </div>
         <ScrollArea className="flex-1 p-4" ref={scrollAreaRef}>
           {messages.map((message, index) => (
             <div
@@ -490,6 +496,7 @@ export function GroqChat() {
           </form>
         </div>
       </Card>
+      <StockPanel />
       <div className="fixed bottom-8 right-8">
         <FloatingMic onTranscription={handleTranscription} isLoading={isLoading} />
       </div>
