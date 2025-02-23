@@ -48,8 +48,6 @@ export function GroqChat() {
   const [windowSize, setWindowSize] = useState({ width: 0, height: 0 });
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const lastMessageRef = useRef<Message | null>(null);
-  const audioQueueRef = useRef<string[]>([]);
-  const isPlayingRef = useRef(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -115,11 +113,17 @@ export function GroqChat() {
 
       if (!response.ok) throw new Error(response.statusText);
 
-      const data = await response.json();
-      const assistantMessage = { role: "assistant" as const, content: data.content };
-      
-      setMessages(prev => [...prev, assistantMessage]);
-      playNextAudioChunk(data.content);
+      await handleStreamResponse(response, (content) => {
+        setMessages(prev => {
+          const newMessages = [...prev];
+          if (newMessages[newMessages.length - 1]?.role === 'assistant') {
+            newMessages[newMessages.length - 1].content = content;
+          } else {
+            newMessages.push({ role: 'assistant', content });
+          }
+          return newMessages;
+        });
+      });
 
     } catch (error) {
       console.error("Error:", error);
@@ -141,17 +145,53 @@ export function GroqChat() {
     }
   }, [messages]);
 
+  const handleStreamResponse = async (response: Response, onChunk: (content: string) => void) => {
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("No reader available");
+
+    let fullContent = "";
+    const decoder = new TextDecoder();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const text = decoder.decode(value);
+      const lines = text.split("\n").filter(line => line.trim());
+
+      for (const line of lines) {
+        try {
+          const data = JSON.parse(line);
+          if (data.type === "chunk") {
+            fullContent += data.content;
+            onChunk(fullContent);
+          }
+        } catch (e) {
+          console.error("Error parsing chunk:", e);
+        }
+      }
+    }
+
+    // Play the complete response
+    if (fullContent.trim()) {
+      try {
+        await playNextAudioChunk(fullContent);
+      } catch (error) {
+        console.error("Error playing complete response:", error);
+      }
+    }
+  };
+
   const playNextAudioChunk = async (text: string) => {
     if (!text.trim()) return;
     
     try {
-      // Cleanup previous audio if exists
+      // Stop any existing audio
       if (audioRef.current) {
         audioRef.current.pause();
-        audioRef.current.src = '';
-        audioRef.current.load();
         audioRef.current = null;
       }
+      setIsPlaying(false);
 
       const response = await fetch("/api/text-to-speech", {
         method: "POST",
@@ -164,23 +204,27 @@ export function GroqChat() {
       }
 
       const audioBlob = await response.blob();
-      const audioUrl = URL.createObjectURL(audioBlob);
-      const audio = new Audio(audioUrl);
-
+      const audio = new Audio(URL.createObjectURL(audioBlob));
+      
       audio.onended = () => {
-        URL.revokeObjectURL(audioUrl);
-        audioRef.current = null;
+        URL.revokeObjectURL(audio.src);
         setIsPlaying(false);
-        setCurrentPlayingIndex(null);
+        audioRef.current = null;
       };
 
-      audioRef.current = audio;
-      setIsPlaying(true);
+      audio.onerror = () => {
+        URL.revokeObjectURL(audio.src);
+        setIsPlaying(false);
+        audioRef.current = null;
+      };
+
       await audio.play();
+      setIsPlaying(true);
+      audioRef.current = audio;
+      
     } catch (error) {
-      console.error("[AUDIO] Error:", error);
+      console.error("Error playing audio:", error);
       setIsPlaying(false);
-      audioRef.current = null;
     }
   };
 
@@ -215,11 +259,17 @@ export function GroqChat() {
 
       if (!response.ok) throw new Error(response.statusText);
 
-      const data = await response.json();
-      const assistantMessage = { role: "assistant" as const, content: data.content };
-      
-      setMessages((prev) => [...prev, assistantMessage]);
-      playNextAudioChunk(data.content);
+      await handleStreamResponse(response, (content) => {
+        setMessages(prev => {
+          const newMessages = [...prev];
+          if (newMessages[newMessages.length - 1]?.role === 'assistant') {
+            newMessages[newMessages.length - 1].content = content;
+          } else {
+            newMessages.push({ role: 'assistant', content });
+          }
+          return newMessages;
+        });
+      });
 
     } catch (error) {
       console.error("Error:", error);
@@ -264,11 +314,17 @@ export function GroqChat() {
         throw new Error('Failed to get response');
       }
 
-      const data = await response.json();
-      const assistantMessage = { role: "assistant" as const, content: data.content };
-      
-      setMessages(prev => [...prev, assistantMessage]);
-      playNextAudioChunk(data.content);
+      await handleStreamResponse(response, (content) => {
+        setMessages(prev => {
+          const newMessages = [...prev];
+          if (newMessages[newMessages.length - 1]?.role === 'assistant') {
+            newMessages[newMessages.length - 1].content = content;
+          } else {
+            newMessages.push({ role: 'assistant', content });
+          }
+          return newMessages;
+        });
+      });
 
     } catch (error) {
       console.error('Error:', error);
@@ -284,7 +340,7 @@ export function GroqChat() {
     }
   };
 
-  const toggleAudio = (text: string, index: number) => {
+  const toggleAudio = async (text: string, index: number) => {
     if (audioRef.current && isPlaying) {
       audioRef.current.pause();
       audioRef.current = null;
@@ -292,7 +348,12 @@ export function GroqChat() {
       setCurrentPlayingIndex(null);
     } else {
       setCurrentPlayingIndex(index);
-      playNextAudioChunk(text);
+      try {
+        await playNextAudioChunk(text);
+      } catch (error) {
+        console.error("Toggle audio error:", error);
+        setCurrentPlayingIndex(null);
+      }
     }
   };
 
