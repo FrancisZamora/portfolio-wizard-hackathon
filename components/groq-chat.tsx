@@ -88,24 +88,24 @@ const STARTER_PROMPTS = [
 ];
 
 const SourcesDisplay = ({ sources }: { sources: Source[] }) => {
-  if (!sources.length) return null;
+  if (!sources?.length) return null;
   
   return (
-    <div className="mt-4 p-4 border rounded-lg bg-muted/50">
+    <div className="mt-4 p-4 rounded-lg bg-gradient-to-br from-violet-500/5 to-fuchsia-500/5 border border-violet-500/20">
       <h3 className="font-medium mb-2 text-lg bg-gradient-to-r from-violet-500 to-fuchsia-500 bg-clip-text text-transparent">Sources:</h3>
       <ul className="space-y-2">
         {sources.map((source, index) => (
-          <li key={index}>
+          <li key={index} className="flex items-start gap-2">
+            <span className="w-6 h-6 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white text-sm flex-shrink-0">
+              {index + 1}
+            </span>
             <a 
               href={source.url} 
               target="_blank" 
               rel="noopener noreferrer"
-              className="text-blue-500 hover:underline flex items-center gap-2"
+              className="text-violet-500 hover:text-fuchsia-500 transition-colors duration-200 hover:underline"
             >
-              <span className="w-6 h-6 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white text-sm">
-                {index + 1}
-              </span>
-              {source.title}
+              {source.title || source.url}
             </a>
           </li>
         ))}
@@ -115,12 +115,17 @@ const SourcesDisplay = ({ sources }: { sources: Source[] }) => {
 };
 
 const SearchingIndicator = () => (
-  <div className="flex items-center gap-3 p-3 rounded-lg bg-gradient-to-br from-violet-500/10 to-fuchsia-500/10 border border-violet-500/20 animate-pulse">
+  <motion.div
+    initial={{ opacity: 0 }}
+    animate={{ opacity: 1 }}
+    exit={{ opacity: 0 }}
+    className="flex items-center gap-3 p-3 rounded-lg bg-gradient-to-br from-violet-500/10 to-fuchsia-500/10 border border-violet-500/20"
+  >
     <div className="w-6 h-6 rounded-full border-2 border-violet-500 border-t-transparent animate-spin" />
     <span className="text-lg font-medium bg-gradient-to-r from-violet-500 to-fuchsia-500 bg-clip-text text-transparent">
       Researching...
     </span>
-  </div>
+  </motion.div>
 );
 
 export function GroqChat() {
@@ -142,6 +147,7 @@ export function GroqChat() {
   const processingPromise = useRef<Promise<void>>(Promise.resolve());
   const [currentGraph, setCurrentGraph] = useState<GraphData | null>(null);
   const [currentSources, setCurrentSources] = useState<Source[]>([]);
+  const searchTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     // Set initial window size
@@ -197,6 +203,15 @@ export function GroqChat() {
         URL.revokeObjectURL(audio.src);
       });
       audioQueue.current = [];
+    };
+  }, []);
+
+  // Add cleanup for the timer
+  useEffect(() => {
+    return () => {
+      if (searchTimerRef.current) {
+        clearTimeout(searchTimerRef.current);
+      }
     };
   }, []);
 
@@ -436,7 +451,6 @@ export function GroqChat() {
           const { done, value } = await reader.read();
           if (done) {
             console.log("[GROQ_CHAT_CLIENT] Stream reading completed");
-            setIsSearching(false);
             break;
           }
 
@@ -454,7 +468,7 @@ export function GroqChat() {
               try {
                 console.log("[GROQ_CHAT_CLIENT] Processing line:", line);
                 const data = JSON.parse(line);
-                
+
                 switch (data.type) {
                   case "chunk":
                     console.log("[GROQ_CHAT_CLIENT] Processing text chunk");
@@ -471,31 +485,32 @@ export function GroqChat() {
                     break;
                   case "search_results":
                     console.log("[GROQ_CHAT_CLIENT] Processing search results");
-                    setIsSearching(false);
                     fullContent += data.content.text;
                     onChunk(fullContent);
                     
-                    // Display sources in a book widget
                     if (data.content.sources?.length > 0) {
-                      setCurrentSources(data.content.sources.map((source: any) => ({
-                        title: source.title,
-                        url: source.url
-                      })));
+                      setCurrentSources(data.content.sources);
                     }
                     break;
                   case "tool_call":
                     if (data.tool === "search") {
+                      // Clear any existing timer
+                      if (searchTimerRef.current) {
+                        clearTimeout(searchTimerRef.current);
+                      }
                       setIsSearching(true);
+                      // Set new timer to hide the indicator after 10 seconds
+                      searchTimerRef.current = setTimeout(() => {
+                        setIsSearching(false);
+                      }, 10000);
                     }
                     break;
-                  case "error":
-                    console.error("[GROQ_CHAT_CLIENT] Received error from server:", data.content);
-                    setIsSearching(false);
-                    throw new Error(data.content);
                   case "done":
                     console.log("[GROQ_CHAT_CLIENT] Received done signal");
-                    setIsSearching(false);
                     return;
+                  case "error":
+                    console.error("[GROQ_CHAT_CLIENT] Received error from server:", data.content);
+                    throw new Error(data.content);
                   default:
                     console.warn("[GROQ_CHAT_CLIENT] Unknown chunk type:", data.type);
                 }
@@ -522,7 +537,6 @@ export function GroqChat() {
         throw error;
       } finally {
         console.log("[GROQ_CHAT_CLIENT] Releasing reader lock");
-        setIsSearching(false);
         reader.releaseLock();
       }
     } catch (error: any) {
@@ -530,7 +544,6 @@ export function GroqChat() {
         error: error.message,
         stack: error.stack
       });
-      setIsSearching(false);
       throw error;
     }
   };
@@ -900,22 +913,29 @@ export function GroqChat() {
               <div className="flex-1">
                 {message.content}
                 {message.role === 'assistant' && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="ml-2 hover:bg-violet-500/10"
-                    onClick={() => toggleAudio(message.content, index)}
-                  >
-                    {isPlaying && currentPlayingIndex === index ? 
-                      <VolumeX className="h-4 w-4" /> : 
-                      <Volume2 className="h-4 w-4" />
-                    }
-                  </Button>
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="ml-2 hover:bg-violet-500/10"
+                      onClick={() => toggleAudio(message.content, index)}
+                    >
+                      {isPlaying && currentPlayingIndex === index ? 
+                        <VolumeX className="h-4 w-4" /> : 
+                        <Volume2 className="h-4 w-4" />
+                      }
+                    </Button>
+                    {index === messages.length - 1 && currentSources.length > 0 && (
+                      <SourcesDisplay sources={currentSources} />
+                    )}
+                  </>
                 )}
               </div>
             </div>
           ))}
-          {isSearching && <SearchingIndicator />}
+          <AnimatePresence>
+            {isSearching && <SearchingIndicator />}
+          </AnimatePresence>
         </ScrollArea>
         <div className="p-4 border-t border-violet-500/20">
           <form onSubmit={handleSubmit} className="flex gap-2">
