@@ -60,6 +60,11 @@ interface GraphData {
   content: GraphContent;
 }
 
+interface Source {
+  title: string;
+  url: string;
+}
+
 const STARTER_PROMPTS = [
   // Inner ring prompts (5 instead of 8)
   "Help me research Apple stock",
@@ -82,10 +87,47 @@ const STARTER_PROMPTS = [
   "Commodities"
 ];
 
+const SourcesDisplay = ({ sources }: { sources: Source[] }) => {
+  if (!sources.length) return null;
+  
+  return (
+    <div className="mt-4 p-4 border rounded-lg bg-muted/50">
+      <h3 className="font-medium mb-2 text-lg bg-gradient-to-r from-violet-500 to-fuchsia-500 bg-clip-text text-transparent">Sources:</h3>
+      <ul className="space-y-2">
+        {sources.map((source, index) => (
+          <li key={index}>
+            <a 
+              href={source.url} 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="text-blue-500 hover:underline flex items-center gap-2"
+            >
+              <span className="w-6 h-6 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white text-sm">
+                {index + 1}
+              </span>
+              {source.title}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+};
+
+const SearchingIndicator = () => (
+  <div className="flex items-center gap-3 p-3 rounded-lg bg-gradient-to-br from-violet-500/10 to-fuchsia-500/10 border border-violet-500/20 animate-pulse">
+    <div className="w-6 h-6 rounded-full border-2 border-violet-500 border-t-transparent animate-spin" />
+    <span className="text-lg font-medium bg-gradient-to-r from-violet-500 to-fuchsia-500 bg-clip-text text-transparent">
+      Researching...
+    </span>
+  </div>
+);
+
 export function GroqChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentPlayingIndex, setCurrentPlayingIndex] = useState<number | null>(null);
   const [isInitialState, setIsInitialState] = useState(true);
@@ -99,6 +141,7 @@ export function GroqChat() {
   const isProcessingChunks = useRef(false);
   const processingPromise = useRef<Promise<void>>(Promise.resolve());
   const [currentGraph, setCurrentGraph] = useState<GraphData | null>(null);
+  const [currentSources, setCurrentSources] = useState<Source[]>([]);
 
   useEffect(() => {
     // Set initial window size
@@ -393,6 +436,7 @@ export function GroqChat() {
           const { done, value } = await reader.read();
           if (done) {
             console.log("[GROQ_CHAT_CLIENT] Stream reading completed");
+            setIsSearching(false);
             break;
           }
 
@@ -425,11 +469,32 @@ export function GroqChat() {
                     console.log("[GROQ_CHAT_CLIENT] Processing audio chunk");
                     await queueAudioChunk(data.content);
                     break;
+                  case "search_results":
+                    console.log("[GROQ_CHAT_CLIENT] Processing search results");
+                    setIsSearching(false);
+                    fullContent += data.content.text;
+                    onChunk(fullContent);
+                    
+                    // Display sources in a book widget
+                    if (data.content.sources?.length > 0) {
+                      setCurrentSources(data.content.sources.map((source: any) => ({
+                        title: source.title,
+                        url: source.url
+                      })));
+                    }
+                    break;
+                  case "tool_call":
+                    if (data.tool === "search") {
+                      setIsSearching(true);
+                    }
+                    break;
                   case "error":
                     console.error("[GROQ_CHAT_CLIENT] Received error from server:", data.content);
+                    setIsSearching(false);
                     throw new Error(data.content);
                   case "done":
                     console.log("[GROQ_CHAT_CLIENT] Received done signal");
+                    setIsSearching(false);
                     return;
                   default:
                     console.warn("[GROQ_CHAT_CLIENT] Unknown chunk type:", data.type);
@@ -457,6 +522,7 @@ export function GroqChat() {
         throw error;
       } finally {
         console.log("[GROQ_CHAT_CLIENT] Releasing reader lock");
+        setIsSearching(false);
         reader.releaseLock();
       }
     } catch (error: any) {
@@ -464,6 +530,7 @@ export function GroqChat() {
         error: error.message,
         stack: error.stack
       });
+      setIsSearching(false);
       throw error;
     }
   };
@@ -848,6 +915,7 @@ export function GroqChat() {
               </div>
             </div>
           ))}
+          {isSearching && <SearchingIndicator />}
         </ScrollArea>
         <div className="p-4 border-t border-violet-500/20">
           <form onSubmit={handleSubmit} className="flex gap-2">
