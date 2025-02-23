@@ -49,6 +49,8 @@ export function GroqChat() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const lastMessageRef = useRef<Message | null>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const audioQueue = useRef<HTMLAudioElement[]>([]);
+  const isProcessingAudio = useRef(false);
 
   useEffect(() => {
     // Set initial window size
@@ -90,6 +92,22 @@ export function GroqChat() {
       }
     }
   }, [messages]);
+
+  // Add cleanup effect
+  useEffect(() => {
+    return () => {
+      // Cleanup all audio elements on unmount
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      audioQueue.current.forEach(audio => {
+        audio.pause();
+        URL.revokeObjectURL(audio.src);
+      });
+      audioQueue.current = [];
+    };
+  }, []);
 
   const startConversation = (prompt?: string) => {
     setIsInitialState(false);
@@ -145,86 +163,156 @@ export function GroqChat() {
     }
   }, [messages]);
 
+  // Add retry utility
+  const retryWithBackoff = async <T,>(
+    operation: () => Promise<T>,
+    retries = 3,
+    delay = 1000,
+    backoffRate = 2
+  ): Promise<T> => {
+    try {
+      return await operation();
+    } catch (error) {
+      if (retries > 0) {
+        console.log(`Retrying operation, ${retries} attempts remaining`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return retryWithBackoff(operation, retries - 1, delay * backoffRate, backoffRate);
+      }
+      throw error;
+    }
+  };
+
+  const playNextInQueue = async () => {
+    if (isProcessingAudio.current || audioQueue.current.length === 0) return;
+    
+    isProcessingAudio.current = true;
+    const audio = audioQueue.current[0];
+    audioRef.current = audio;
+    setIsPlaying(true);
+
+    try {
+      await retryWithBackoff(async () => {
+        try {
+          await audio.play();
+          // Wait for audio to finish
+          await new Promise((resolve, reject) => {
+            audio.onended = resolve;
+            audio.onerror = reject;
+          });
+        } catch (error) {
+          console.error("Audio playback error:", error);
+          throw error; // Rethrow for retry
+        }
+      }, 3, 500); // 3 retries, starting with 500ms delay
+    } catch (error) {
+      console.error("Final audio playback error:", error);
+    } finally {
+      if (audioRef.current === audio) {
+        URL.revokeObjectURL(audio.src);
+        audioQueue.current.shift(); // Remove played audio
+        audioRef.current = null;
+        setIsPlaying(false);
+        isProcessingAudio.current = false;
+        // Play next in queue if available
+        if (audioQueue.current.length > 0) {
+          playNextInQueue();
+        }
+      }
+    }
+  };
+
+  const queueAudioChunk = async (base64Audio: string) => {
+    try {
+      await retryWithBackoff(async () => {
+        // Convert base64 to ArrayBuffer
+        const binaryString = window.atob(base64Audio);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        
+        // Create audio blob and audio element
+        const audioBlob = new Blob([bytes], { type: 'audio/mpeg' });
+        const audio = new Audio(URL.createObjectURL(audioBlob));
+        
+        // Add to queue
+        audioQueue.current.push(audio);
+        
+        // Start playing if not already processing
+        if (!isProcessingAudio.current) {
+          playNextInQueue();
+        }
+      }, 3, 500);
+    } catch (error) {
+      console.error("Error queuing audio chunk:", error);
+    }
+  };
+
   const handleStreamResponse = async (response: Response, onChunk: (content: string) => void) => {
     const reader = response.body?.getReader();
     if (!reader) throw new Error("No reader available");
 
     let fullContent = "";
+    let buffer = ""; // Buffer for incomplete chunks
     const decoder = new TextDecoder();
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-      const text = decoder.decode(value);
-      const lines = text.split("\n").filter(line => line.trim());
+        // Append new data to buffer
+        buffer += decoder.decode(value, { stream: true });
 
-      for (const line of lines) {
+        // Process complete lines
+        let newlineIndex;
+        while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
+          const line = buffer.slice(0, newlineIndex);
+          buffer = buffer.slice(newlineIndex + 1);
+
+          if (!line.trim()) continue;
+
+          try {
+            const data = JSON.parse(line);
+            
+            switch (data.type) {
+              case "chunk":
+                fullContent += data.content;
+                onChunk(fullContent);
+                break;
+              case "audio":
+                await queueAudioChunk(data.content);
+                break;
+              case "error":
+                console.error("Stream error:", data.content);
+                throw new Error(data.content);
+                break;
+              case "done":
+                return;
+            }
+          } catch (e) {
+            console.error("Error parsing chunk:", e, "Line:", line);
+          }
+        }
+      }
+
+      // Process any remaining data in buffer
+      if (buffer.trim()) {
         try {
-          const data = JSON.parse(line);
+          const data = JSON.parse(buffer);
           if (data.type === "chunk") {
             fullContent += data.content;
             onChunk(fullContent);
           }
         } catch (e) {
-          console.error("Error parsing chunk:", e);
+          console.error("Error parsing final chunk:", e);
         }
       }
-    }
-
-    // Play the complete response
-    if (fullContent.trim()) {
-      try {
-        await playNextAudioChunk(fullContent);
-      } catch (error) {
-        console.error("Error playing complete response:", error);
-      }
-    }
-  };
-
-  const playNextAudioChunk = async (text: string) => {
-    if (!text.trim()) return;
-    
-    try {
-      // Stop any existing audio
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current = null;
-      }
-      setIsPlaying(false);
-
-      const response = await fetch("/api/text-to-speech", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: text.trim() }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to generate speech: ${response.status}`);
-      }
-
-      const audioBlob = await response.blob();
-      const audio = new Audio(URL.createObjectURL(audioBlob));
-      
-      audio.onended = () => {
-        URL.revokeObjectURL(audio.src);
-        setIsPlaying(false);
-        audioRef.current = null;
-      };
-
-      audio.onerror = () => {
-        URL.revokeObjectURL(audio.src);
-        setIsPlaying(false);
-        audioRef.current = null;
-      };
-
-      await audio.play();
-      setIsPlaying(true);
-      audioRef.current = audio;
-      
     } catch (error) {
-      console.error("Error playing audio:", error);
-      setIsPlaying(false);
+      console.error("Stream processing error:", error);
+      throw error;
+    } finally {
+      reader.releaseLock();
     }
   };
 
@@ -342,14 +430,45 @@ export function GroqChat() {
 
   const toggleAudio = async (text: string, index: number) => {
     if (audioRef.current && isPlaying) {
+      // Stop all audio and clear queue
       audioRef.current.pause();
       audioRef.current = null;
+      audioQueue.current.forEach(audio => {
+        audio.pause();
+        URL.revokeObjectURL(audio.src);
+      });
+      audioQueue.current = [];
+      isProcessingAudio.current = false;
       setIsPlaying(false);
       setCurrentPlayingIndex(null);
     } else {
       setCurrentPlayingIndex(index);
       try {
-        await playNextAudioChunk(text);
+        await retryWithBackoff(async () => {
+          const response = await fetch("/api/text-to-speech", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: text.trim() }),
+          });
+
+          if (!response.ok) {
+            throw new Error(`Failed to generate speech: ${response.status}`);
+          }
+
+          const audioBlob = await response.blob();
+          const audio = new Audio(URL.createObjectURL(audioBlob));
+          
+          // Clear any existing queue
+          audioQueue.current.forEach(a => {
+            a.pause();
+            URL.revokeObjectURL(a.src);
+          });
+          audioQueue.current = [audio];
+          isProcessingAudio.current = false;
+          
+          // Start playing
+          await playNextInQueue();
+        }, 3, 1000);
       } catch (error) {
         console.error("Toggle audio error:", error);
         setCurrentPlayingIndex(null);
