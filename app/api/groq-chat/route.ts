@@ -93,6 +93,7 @@ export async function POST(req: Request) {
         let lastAudioTime = Date.now();
         const MIN_AUDIO_INTERVAL = 50;
         let audioBuffer = "";
+        let processedLength = 0;  // Track how much text we've processed
         let currentWord = "";
         let audioProcessing = Promise.resolve();
 
@@ -146,7 +147,10 @@ export async function POST(req: Request) {
               }
             }
 
-            return text.replace(/[^.!?]+[.!?]+/g, '').trim();
+            // Return any unprocessed text after the last complete sentence
+            const lastSentence = sentences[sentences.length - 1];
+            const lastSentenceIndex = text.lastIndexOf(lastSentence) + lastSentence.length;
+            return text.slice(lastSentenceIndex);
           } catch (error: any) {
             console.error("[GROQ_CHAT] Error in sentence processing:", {
               message: error.message,
@@ -160,13 +164,21 @@ export async function POST(req: Request) {
         const processAudioAsync = (text: string) => {
           audioProcessing = audioProcessing.then(async () => {
             try {
-              if (/[.!?]/.test(text)) {
-                console.log("[GROQ_CHAT] Processing complete sentence in audio buffer");
-                audioBuffer = await processSentences(audioBuffer);
+              // Only process new text
+              const newText = text.slice(processedLength);
+              if (!newText) return;
+
+              if (/[.!?]/.test(newText)) {
+                console.log("[GROQ_CHAT] Processing new complete sentence");
+                const remainingText = await processSentences(newText);
+                audioBuffer = remainingText;
+                processedLength = text.length - remainingText.length;
               }
-              else if (audioBuffer.length > 200) {
-                console.log("[GROQ_CHAT] Processing audio buffer due to length:", audioBuffer.length);
-                audioBuffer = await processSentences(audioBuffer + ".");
+              else if (newText.length > 200) {
+                console.log("[GROQ_CHAT] Processing new text due to length:", newText.length);
+                const remainingText = await processSentences(newText + ".");
+                audioBuffer = remainingText;
+                processedLength = text.length - remainingText.length;
               }
             } catch (error: any) {
               console.error("[GROQ_CHAT] Error in audio processing:", {
@@ -193,9 +205,12 @@ export async function POST(req: Request) {
             }
 
             console.log("[GROQ_CHAT] Processing content chunk:", content);
+            
+            // Add to audio buffer and process audio asynchronously
             audioBuffer += content;
             processAudioAsync(audioBuffer);
 
+            // Process text immediately
             for (let i = 0; i < content.length; i++) {
               const char = content[i];
               if (char === ' ' || char === '\n') {
@@ -211,15 +226,18 @@ export async function POST(req: Request) {
             }
           }
 
+          // Process any remaining text
           if (currentWord) {
             console.log("[GROQ_CHAT] Processing final word:", currentWord);
             processTextChunk(currentWord);
 
           }
 
+          // Wait for audio processing to complete
           console.log("[GROQ_CHAT] Waiting for audio processing to complete");
           await audioProcessing;
 
+          // Process any remaining audio
           if (audioBuffer.trim()) {
             console.log("[GROQ_CHAT] Processing remaining audio buffer");
             await processSentences(audioBuffer + ".");
