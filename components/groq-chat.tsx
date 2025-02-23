@@ -10,10 +10,24 @@ import { FloatingMic } from "@/components/floating-mic";
 import { motion, AnimatePresence } from "framer-motion";
 import { StockPanel } from "@/components/stock-panel";
 import wizardLogo from "@/images/wizard.png";
+import { Line } from 'react-chartjs-2';
 
 interface Message {
   role: 'user' | 'assistant';
   content: string;
+}
+
+interface GraphData {
+  labels: string[];
+  datasets: {
+    label: string;
+    data: number[];
+    borderColor: string;
+    backgroundColor: string;
+    fill: boolean;
+    tension: number;
+  }[];
+  plotImage?: string;
 }
 
 const STARTER_PROMPTS = [
@@ -54,6 +68,7 @@ export function GroqChat() {
   const pendingAudioChunks = useRef<string[]>([]);
   const isProcessingChunks = useRef(false);
   const processingPromise = useRef<Promise<void>>(Promise.resolve());
+  const [currentGraph, setCurrentGraph] = useState<GraphData | null>(null);
 
   useEffect(() => {
     // Set initial window size
@@ -224,30 +239,6 @@ export function GroqChat() {
     }
   };
 
-  const queueAudioChunk = async (base64Audio: string) => {
-    // Add to pending chunks
-    pendingAudioChunks.current.push(base64Audio);
-    
-    // Chain the processing to ensure sequential order
-    processingPromise.current = processingPromise.current
-      .then(async () => {
-        if (!isProcessingChunks.current) {
-          isProcessingChunks.current = true;
-          try {
-            // Process all pending chunks in order
-            while (pendingAudioChunks.current.length > 0) {
-              await processNextAudioChunk();
-            }
-          } finally {
-            isProcessingChunks.current = false;
-          }
-        }
-      })
-      .catch(error => {
-        console.error("Error in audio processing chain:", error);
-        isProcessingChunks.current = false;
-      });
-  };
 
   const playNextInQueue = async () => {
     if (isProcessingAudio.current || audioQueue.current.length === 0) return;
@@ -337,6 +328,23 @@ export function GroqChat() {
     }
   };
 
+  const generateRandomGraph = () => {
+    const labels = Array.from({ length: 10 }, (_, i) => `Point ${i + 1}`);
+    const data = Array.from({ length: 10 }, () => Math.floor(Math.random() * 100));
+    
+    return {
+      labels,
+      datasets: [{
+        label: 'Random Data',
+        data,
+        borderColor: 'rgb(139, 92, 246)',
+        backgroundColor: 'rgba(139, 92, 246, 0.1)',
+        fill: true,
+        tension: 0.4,
+      }]
+    };
+  };
+
   const handleStreamResponse = async (response: Response, onChunk: (content: string) => void) => {
     try {
       console.log("[GROQ_CHAT_CLIENT] Starting stream response handling");
@@ -378,6 +386,10 @@ export function GroqChat() {
                     console.log("[GROQ_CHAT_CLIENT] Processing text chunk");
                     fullContent += data.content;
                     onChunk(fullContent);
+                    break;
+                  case "graph":
+                    console.log("[GROQ_CHAT_CLIENT] Processing graph data");
+                    setCurrentGraph(data.content);
                     break;
                   case "audio":
                     console.log("[GROQ_CHAT_CLIENT] Processing audio chunk");
@@ -823,7 +835,122 @@ export function GroqChat() {
           </form>
         </div>
       </Card>
-      <StockPanel />
+      <div className="fixed right-0 top-0 bottom-0 w-1/2 flex flex-col
+                    border-l border-violet-500/20 shadow-lg
+                    bg-gradient-to-br from-violet-500/5 to-fuchsia-500/5
+                    backdrop-blur-sm rounded-none p-6">
+        {currentGraph ? (
+          <div className="flex flex-col h-full">
+            <div className="mb-6">
+              <h2 className="text-2xl font-bold bg-gradient-to-r from-violet-500 to-fuchsia-500 bg-clip-text text-transparent mb-2">
+                Portfolio Performance
+              </h2>
+              <div className="flex gap-4">
+                <div className="flex items-center">
+                  <div className="w-3 h-3 rounded-full bg-[rgb(139,92,246)] mr-2"></div>
+                  <span>Strategy Returns</span>
+                </div>
+                <div className="flex items-center">
+                  <div className="w-3 h-3 rounded-full bg-[rgb(244,114,182)] mr-2"></div>
+                  <span>Benchmark (S&P 500)</span>
+                </div>
+              </div>
+            </div>
+            
+            <div className="flex-1 min-h-[400px] grid grid-cols-1 gap-6">
+              {/* Interactive Chart.js plot */}
+              <div className="w-full h-[400px]">
+                <Line
+                  data={currentGraph}
+                  options={{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                      legend: {
+                        display: false
+                      },
+                      tooltip: {
+                        mode: 'index',
+                        intersect: false,
+                        callbacks: {
+                          label: function(context) {
+                            return `${context.dataset.label}: ${context.parsed.y.toFixed(2)}%`;
+                          }
+                        }
+                      },
+                    },
+                    scales: {
+                      y: {
+                        grid: {
+                          color: 'rgba(139, 92, 246, 0.1)',
+                        },
+                        border: {
+                          color: 'rgba(139, 92, 246, 0.2)',
+                        },
+                        ticks: {
+                          color: 'rgba(139, 92, 246, 0.8)',
+                          callback: function(value) {
+                            return value + '%';
+                          }
+                        }
+                      },
+                      x: {
+                        grid: {
+                          color: 'rgba(139, 92, 246, 0.1)',
+                        },
+                        border: {
+                          color: 'rgba(139, 92, 246, 0.2)',
+                        },
+                        ticks: {
+                          color: 'rgba(139, 92, 246, 0.8)',
+                          maxRotation: 0,
+                          autoSkip: true,
+                          maxTicksLimit: 10
+                        }
+                      }
+                    },
+                    interaction: {
+                      intersect: false,
+                      mode: 'index',
+                    },
+                  }}
+                />
+              </div>
+
+            </div>
+
+            <div className="mt-6 grid grid-cols-2 gap-4">
+              <div className="p-4 rounded-lg bg-gradient-to-br from-violet-500/10 to-fuchsia-500/10 border border-violet-500/20">
+                <div className="text-sm text-violet-300 mb-1">Strategy Performance</div>
+                <div className="text-xl font-semibold">
+                  {currentGraph.datasets[0].data[currentGraph.datasets[0].data.length - 1].toFixed(2)}%
+                </div>
+              </div>
+              <div className="p-4 rounded-lg bg-gradient-to-br from-violet-500/10 to-fuchsia-500/10 border border-violet-500/20">
+                <div className="text-sm text-violet-300 mb-1">Benchmark Performance</div>
+                <div className="text-xl font-semibold">
+                  {currentGraph.datasets[1].data[currentGraph.datasets[1].data.length - 1].toFixed(2)}%
+                </div>
+              </div>
+              <div className="p-4 rounded-lg bg-gradient-to-br from-violet-500/10 to-fuchsia-500/10 border border-violet-500/20">
+                <div className="text-sm text-violet-300 mb-1">Relative Performance</div>
+                <div className="text-xl font-semibold">
+                  {(currentGraph.datasets[0].data[currentGraph.datasets[0].data.length - 1] - 
+                    currentGraph.datasets[1].data[currentGraph.datasets[1].data.length - 1]).toFixed(2)}%
+                </div>
+              </div>
+              <div className="p-4 rounded-lg bg-gradient-to-br from-violet-500/10 to-fuchsia-500/10 border border-violet-500/20">
+                <div className="text-sm text-violet-300 mb-1">Trading Days</div>
+                <div className="text-xl font-semibold">
+                  {currentGraph.labels.length}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <StockPanel />
+        )}
+      </div>
       <div className="fixed bottom-8 right-8">
         <FloatingMic onTranscription={handleTranscription} isLoading={isLoading} />
       </div>

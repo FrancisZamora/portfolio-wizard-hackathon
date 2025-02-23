@@ -3,6 +3,8 @@ import pandas as pd
 import yfinance as yf
 import matplotlib.pyplot as plt
 from typing import Optional
+import io
+import base64
 
 import argparse 
 parser = argparse.ArgumentParser()
@@ -55,9 +57,26 @@ class Backtest:
     if self.results is None:
       raise ValueError("Results are not available. Please run the backtest first.")
   
-  def plot_results(self):
+  def plot_results(self) -> str:
     self._check_results()
-    self.results.plot()
+    
+    # Create the plot
+    plt.figure(figsize=(12, 6))
+    plt.plot(self.results['Strategy Returns'] * 100, label='Strategy Returns', color='#8B5CF6')
+    plt.plot(self.results['Benchmark Returns'] * 100, label='Benchmark Returns', color='#F472B6')
+    plt.grid(True, alpha=0.1)
+    plt.legend()
+    plt.title('Portfolio Performance')
+    plt.ylabel('Returns (%)')
+    
+    # Save plot to base64 string
+    buffer = io.BytesIO()
+    plt.savefig(buffer, format='png', bbox_inches='tight', dpi=300)
+    buffer.seek(0)
+    image_base64 = base64.b64encode(buffer.getvalue()).decode()
+    plt.close()
+    
+    return image_base64
   
   def save_results(self):
     self._check_results()
@@ -98,7 +117,7 @@ class Backtest:
     
     self.results = pd.concat([cum_strategy_returns, cum_benchmark_returns], axis=1)
     self.save_results()
-
+    return self.plot_results()
 
 
 if __name__ == "__main__":
@@ -109,8 +128,5 @@ if __name__ == "__main__":
                       benchmark=args.benchmark, 
                       start_date=args.start_date, 
                       end_date=args.end_date)
-  backtest.run()
-  
-  if args.visualize:
-    backtest.plot_results()
-    plt.show()
+  image_base64 = backtest.run()
+  print(image_base64)  # This will be captured by the Node.js process
