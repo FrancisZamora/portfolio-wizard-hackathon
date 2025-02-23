@@ -58,13 +58,18 @@ async function textToSpeech(text: string): Promise<ArrayBuffer> {
 
 export async function POST(req: Request) {
   try {
+    console.log("[GROQ_CHAT] Starting request processing");
+    
     const body = await req.json();
     const { messages } = body;
+    console.log("[GROQ_CHAT] Received messages:", JSON.stringify(messages, null, 2));
 
     if (!messages) {
+      console.log("[GROQ_CHAT] No messages provided");
       return new NextResponse("Messages are required", { status: 400 });
     }
 
+    console.log("[GROQ_CHAT] Creating completion with model parameters");
     const completion = await groq.chat.completions.create({
       messages,
       model: "llama-3.3-70b-versatile",
@@ -72,19 +77,23 @@ export async function POST(req: Request) {
       max_tokens: 1000,
       stream: true,
       top_p: 1.0,
-      frequency_penalty: 0,
-      presence_penalty: 0
+    }).catch(error => {
+      console.error("[GROQ_CHAT] Groq API error:", {
+        message: error.message,
+        status: error.status,
+        response: error.response,
+        stack: error.stack
+      });
+      throw error;
     });
 
-    // Create a streaming response
+    console.log("[GROQ_CHAT] Creating streaming response");
     const stream = new ReadableStream({
       async start(controller) {
         let lastAudioTime = Date.now();
-        const MIN_AUDIO_INTERVAL = 50; // Minimum 50ms between audio chunks
-        let audioBuffer = ""; // Separate buffer for audio processing
-        let currentWord = ""; // Buffer for current word
-
-        // Create separate promise chain for audio processing
+        const MIN_AUDIO_INTERVAL = 50;
+        let audioBuffer = "";
+        let currentWord = "";
         let audioProcessing = Promise.resolve();
 
         const processTextChunk = (content: string) => {
@@ -94,35 +103,32 @@ export async function POST(req: Request) {
               content: content 
             }) + "\n";
             controller.enqueue(new TextEncoder().encode(textChunk));
-          } catch (error) {
-            console.error("Error processing text chunk:", error);
-            controller.enqueue(
-              new TextEncoder().encode(
-                JSON.stringify({ 
-                  type: "error", 
-                  content: "Text chunk processing error" 
-                }) + "\n"
-              )
-            );
+            console.log("[GROQ_CHAT] Processed text chunk:", content);
+          } catch (error: any) {
+            console.error("[GROQ_CHAT] Error processing text chunk:", {
+              message: error.message,
+              stack: error.stack
+            });
+            throw error;
           }
         };
 
         const processSentences = async (text: string) => {
           try {
+            console.log("[GROQ_CHAT] Processing sentences:", text);
             const sentences = text.match(/[^.!?]+[.!?]+/g);
             if (!sentences) return text;
 
             for (const sentence of sentences) {
               try {
+                console.log("[GROQ_CHAT] Generating audio for sentence:", sentence.trim());
                 const audioData = await textToSpeech(sentence.trim());
                 
-                // Ensure minimum interval between audio chunks
                 const timeSinceLastAudio = Date.now() - lastAudioTime;
                 if (timeSinceLastAudio < MIN_AUDIO_INTERVAL) {
                   await new Promise(resolve => setTimeout(resolve, MIN_AUDIO_INTERVAL - timeSinceLastAudio));
                 }
                 
-                // Send the audio chunk
                 const chunk = JSON.stringify({
                   type: "audio",
                   content: Buffer.from(audioData).toString('base64')
@@ -130,33 +136,23 @@ export async function POST(req: Request) {
                 
                 controller.enqueue(new TextEncoder().encode(chunk));
                 lastAudioTime = Date.now();
-              } catch (error) {
-                console.error("Error processing individual sentence:", error);
-                controller.enqueue(
-                  new TextEncoder().encode(
-                    JSON.stringify({ 
-                      type: "error", 
-                      content: "Audio generation error for sentence" 
-                    }) + "\n"
-                  )
-                );
-                // Continue with next sentence
+                console.log("[GROQ_CHAT] Successfully processed audio for sentence");
+              } catch (error: any) {
+                console.error("[GROQ_CHAT] Error processing sentence audio:", {
+                  sentence: sentence.trim(),
+                  message: error.message,
+                  stack: error.stack
+                });
               }
             }
 
-            // Return any remaining text that didn't end with punctuation
             return text.replace(/[^.!?]+[.!?]+/g, '').trim();
-          } catch (error) {
-            console.error("Error in sentence processing:", error);
-            controller.enqueue(
-              new TextEncoder().encode(
-                JSON.stringify({ 
-                  type: "error", 
-                  content: "Sentence processing error" 
-                }) + "\n"
-              )
-            );
-            return text;
+          } catch (error: any) {
+            console.error("[GROQ_CHAT] Error in sentence processing:", {
+              message: error.message,
+              stack: error.stack
+            });
+            throw error;
           }
         };
 
@@ -164,131 +160,97 @@ export async function POST(req: Request) {
           audioProcessing = audioProcessing.then(async () => {
             try {
               if (/[.!?]/.test(text)) {
+                console.log("[GROQ_CHAT] Processing complete sentence in audio buffer");
                 audioBuffer = await processSentences(audioBuffer);
               }
               else if (audioBuffer.length > 200) {
+                console.log("[GROQ_CHAT] Processing audio buffer due to length:", audioBuffer.length);
                 audioBuffer = await processSentences(audioBuffer + ".");
               }
-            } catch (error) {
-              console.error("Error in audio processing:", error);
-              controller.enqueue(
-                new TextEncoder().encode(
-                  JSON.stringify({ 
-                    type: "error", 
-                    content: "Audio processing error" 
-                  }) + "\n"
-                )
-              );
+            } catch (error: any) {
+              console.error("[GROQ_CHAT] Error in audio processing:", {
+                text: text,
+                message: error.message,
+                stack: error.stack
+              });
             }
-          }).catch(error => {
-            console.error("Fatal audio processing error:", error);
-            controller.enqueue(
-              new TextEncoder().encode(
-                JSON.stringify({ 
-                  type: "error", 
-                  content: "Fatal audio processing error" 
-                }) + "\n"
-              )
-            );
+          }).catch((error: any) => {
+            console.error("[GROQ_CHAT] Fatal audio processing error:", {
+              message: error.message,
+              stack: error.stack
+            });
           });
         };
 
         try {
+          console.log("[GROQ_CHAT] Starting completion stream processing");
           for await (const chunk of completion) {
-            try {
-              const content = chunk.choices[0]?.delta?.content || "";
-              if (!content) continue;
+            const content = chunk.choices[0]?.delta?.content || "";
+            if (!content) {
+              console.log("[GROQ_CHAT] Empty content chunk received");
+              continue;
+            }
 
-              // Add to audio buffer and process audio asynchronously
-              audioBuffer += content;
-              processAudioAsync(audioBuffer);
+            console.log("[GROQ_CHAT] Processing content chunk:", content);
+            audioBuffer += content;
+            processAudioAsync(audioBuffer);
 
-              // Process text instantly without waiting for audio
-              try {
-                for (let i = 0; i < content.length; i++) {
-                  const char = content[i];
-                  if (char === ' ' || char === '\n') {
-                    if (currentWord) {
-                      processTextChunk(currentWord + char);
-                      currentWord = "";
-                    } else {
-                      processTextChunk(char);
-                    }
-                  } else {
-                    currentWord += char;
-                  }
+            for (let i = 0; i < content.length; i++) {
+              const char = content[i];
+              if (char === ' ' || char === '\n') {
+                if (currentWord) {
+                  processTextChunk(currentWord + char);
+                  currentWord = "";
+                } else {
+                  processTextChunk(char);
                 }
-              } catch (error) {
-                console.error("Error processing text content:", error);
-                controller.enqueue(
-                  new TextEncoder().encode(
-                    JSON.stringify({ 
-                      type: "error", 
-                      content: "Text content processing error" 
-                    }) + "\n"
-                  )
-                );
+              } else {
+                currentWord += char;
               }
-            } catch (error) {
-              console.error("Error processing completion chunk:", error);
-              controller.enqueue(
-                new TextEncoder().encode(
-                  JSON.stringify({ 
-                    type: "error", 
-                    content: "Completion chunk processing error" 
-                  }) + "\n"
-                )
-              );
             }
           }
 
-          // Process any remaining word immediately
           if (currentWord) {
+            console.log("[GROQ_CHAT] Processing final word:", currentWord);
             processTextChunk(currentWord);
           }
 
-          try {
-            // Wait for audio processing to complete before sending done marker
-            await audioProcessing;
+          console.log("[GROQ_CHAT] Waiting for audio processing to complete");
+          await audioProcessing;
 
-            // Process any remaining audio buffer
-            if (audioBuffer.trim()) {
-              await processSentences(audioBuffer + ".");
-            }
-          } catch (error) {
-            console.error("Error in final audio processing:", error);
-            controller.enqueue(
-              new TextEncoder().encode(
-                JSON.stringify({ 
-                  type: "error", 
-                  content: "Final audio processing error" 
-                }) + "\n"
-              )
-            );
+          if (audioBuffer.trim()) {
+            console.log("[GROQ_CHAT] Processing remaining audio buffer");
+            await processSentences(audioBuffer + ".");
           }
 
-          // Send end marker
+          console.log("[GROQ_CHAT] Stream processing completed successfully");
           controller.enqueue(
             new TextEncoder().encode(
               JSON.stringify({ type: "done" }) + "\n"
             )
           );
-        } catch (error) {
-          console.error("Fatal stream processing error:", error);
+        } catch (error: any) {
+          console.error("[GROQ_CHAT] Stream processing error:", {
+            message: error.message,
+            stack: error.stack,
+            phase: "stream_processing"
+          });
           controller.enqueue(
             new TextEncoder().encode(
               JSON.stringify({ 
                 type: "error", 
-                content: "Fatal stream processing error" 
+                content: "Stream processing error: " + error.message
               }) + "\n"
             )
           );
         } finally {
+          console.log("[GROQ_CHAT] Closing stream controller");
           controller.close();
         }
       }
     });
 
+    console.log("[GROQ_CHAT] Returning stream response");
     return new Response(stream, {
       headers: {
         'Content-Type': 'application/x-ndjson',
@@ -297,8 +259,12 @@ export async function POST(req: Request) {
       },
     });
 
-  } catch (error) {
-    console.log("[GROQ_ERROR]", error);
-    return new NextResponse("Internal Error", { status: 500 });
+  } catch (error: any) {
+    console.error("[GROQ_CHAT] Fatal API error:", {
+      message: error.message,
+      stack: error.stack,
+      phase: "api_handler"
+    });
+    return new NextResponse("Internal Error: " + error.message, { status: 500 });
   }
 }

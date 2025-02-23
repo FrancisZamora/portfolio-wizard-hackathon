@@ -197,32 +197,25 @@ export function GroqChat() {
           // Wait for audio to finish
           await new Promise((resolve, reject) => {
             audio.onended = resolve;
-            audio.onerror = (e) => {
-              console.error("Audio playback error event:", e);
-              reject(e);
-            };
+            audio.onerror = reject;
           });
         } catch (error) {
-          console.error("Audio playback attempt failed:", error);
-          throw error;
+          console.error("Audio playback error:", error);
+          throw error; // Rethrow for retry
         }
-      }, 3, 500);
+      }, 3, 500); // 3 retries, starting with 500ms delay
     } catch (error) {
-      console.error("All audio playback retries failed:", error);
+      console.error("Final audio playback error:", error);
     } finally {
       if (audioRef.current === audio) {
-        try {
-          URL.revokeObjectURL(audio.src);
-          audioQueue.current.shift();
-          audioRef.current = null;
-          setIsPlaying(false);
-          isProcessingAudio.current = false;
-          // Play next in queue if available
-          if (audioQueue.current.length > 0) {
-            await playNextInQueue();
-          }
-        } catch (error) {
-          console.error("Error in audio cleanup:", error);
+        URL.revokeObjectURL(audio.src);
+        audioQueue.current.shift(); // Remove played audio
+        audioRef.current = null;
+        setIsPlaying(false);
+        isProcessingAudio.current = false;
+        // Play next in queue if available
+        if (audioQueue.current.length > 0) {
+          playNextInQueue();
         }
       }
     }
@@ -230,65 +223,68 @@ export function GroqChat() {
 
   const queueAudioChunk = async (base64Audio: string) => {
     try {
+      console.log("[GROQ_CHAT_CLIENT] Starting audio chunk processing");
       await retryWithBackoff(async () => {
         try {
-          // Convert base64 to ArrayBuffer
+          console.log("[GROQ_CHAT_CLIENT] Converting base64 to audio");
           const binaryString = window.atob(base64Audio);
           const bytes = new Uint8Array(binaryString.length);
           for (let i = 0; i < binaryString.length; i++) {
             bytes[i] = binaryString.charCodeAt(i);
           }
           
-          try {
-            // Create audio blob and audio element
-            const audioBlob = new Blob([bytes], { type: 'audio/mpeg' });
-            const audio = new Audio(URL.createObjectURL(audioBlob));
-            
-            try {
-              // Add to queue
-              audioQueue.current.push(audio);
-              
-              // Start playing if not already processing
-              if (!isProcessingAudio.current) {
-                await playNextInQueue();
-              }
-            } catch (error) {
-              console.error("Error queuing or playing audio:", error);
-              throw error;
-            }
-          } catch (error) {
-            console.error("Error creating audio blob/element:", error);
-            throw error;
+          const audioBlob = new Blob([bytes], { type: 'audio/mpeg' });
+          console.log("[GROQ_CHAT_CLIENT] Created audio blob, size:", audioBlob.size);
+          const audio = new Audio(URL.createObjectURL(audioBlob));
+          
+          console.log("[GROQ_CHAT_CLIENT] Adding audio to queue");
+          audioQueue.current.push(audio);
+          
+          if (!isProcessingAudio.current) {
+            console.log("[GROQ_CHAT_CLIENT] Starting audio playback");
+            await playNextInQueue();
           }
-        } catch (error) {
-          console.error("Error processing base64 audio:", error);
+        } catch (error: any) {
+          console.error("[GROQ_CHAT_CLIENT] Error in audio chunk processing:", {
+            error: error.message,
+            stack: error.stack
+          });
           throw error;
         }
       }, 3, 500);
-    } catch (error) {
-      console.error("Fatal error in audio chunk processing:", error);
+    } catch (error: any) {
+      console.error("[GROQ_CHAT_CLIENT] Fatal error in audio chunk processing:", {
+        error: error.message,
+        stack: error.stack
+      });
     }
   };
 
   const handleStreamResponse = async (response: Response, onChunk: (content: string) => void) => {
     try {
+      console.log("[GROQ_CHAT_CLIENT] Starting stream response handling");
       const reader = response.body?.getReader();
-      if (!reader) throw new Error("No reader available");
+      if (!reader) {
+        console.error("[GROQ_CHAT_CLIENT] No reader available in response");
+        throw new Error("No reader available");
+      }
 
       let fullContent = "";
-      let buffer = ""; // Buffer for incomplete chunks
+      let buffer = "";
       const decoder = new TextDecoder();
 
       try {
         while (true) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done) {
+            console.log("[GROQ_CHAT_CLIENT] Stream reading completed");
+            break;
+          }
 
           try {
-            // Append new data to buffer
             buffer += decoder.decode(value, { stream: true });
+            console.log("[GROQ_CHAT_CLIENT] Received new data, buffer length:", buffer.length);
 
-            // Process complete lines
             let newlineIndex;
             while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
               const line = buffer.slice(0, newlineIndex);
@@ -297,47 +293,58 @@ export function GroqChat() {
               if (!line.trim()) continue;
 
               try {
+                console.log("[GROQ_CHAT_CLIENT] Processing line:", line);
                 const data = JSON.parse(line);
                 
                 switch (data.type) {
                   case "chunk":
-                    try {
-                      fullContent += data.content;
-                      onChunk(fullContent);
-                    } catch (error) {
-                      console.error("Error processing text chunk:", error);
-                    }
+                    console.log("[GROQ_CHAT_CLIENT] Processing text chunk");
+                    fullContent += data.content;
+                    onChunk(fullContent);
                     break;
                   case "audio":
-                    try {
-                      await queueAudioChunk(data.content);
-                    } catch (error) {
-                      console.error("Error processing audio chunk:", error);
-                    }
+                    console.log("[GROQ_CHAT_CLIENT] Processing audio chunk");
+                    await queueAudioChunk(data.content);
                     break;
                   case "error":
-                    console.error("Stream error:", data.content);
+                    console.error("[GROQ_CHAT_CLIENT] Received error from server:", data.content);
                     throw new Error(data.content);
-                    break;
                   case "done":
+                    console.log("[GROQ_CHAT_CLIENT] Received done signal");
                     return;
+                  default:
+                    console.warn("[GROQ_CHAT_CLIENT] Unknown chunk type:", data.type);
                 }
-              } catch (e) {
-                console.error("Error parsing JSON chunk:", e, "Line:", line);
+              } catch (error: any) {
+                console.error("[GROQ_CHAT_CLIENT] Error processing chunk:", {
+                  line,
+                  error: error.message,
+                  stack: error.stack
+                });
               }
             }
-          } catch (error) {
-            console.error("Error processing stream chunk:", error);
+          } catch (error: any) {
+            console.error("[GROQ_CHAT_CLIENT] Error processing stream chunk:", {
+              error: error.message,
+              stack: error.stack
+            });
           }
         }
-      } catch (error) {
-        console.error("Error reading stream:", error);
+      } catch (error: any) {
+        console.error("[GROQ_CHAT_CLIENT] Error reading stream:", {
+          error: error.message,
+          stack: error.stack
+        });
         throw error;
       } finally {
+        console.log("[GROQ_CHAT_CLIENT] Releasing reader lock");
         reader.releaseLock();
       }
-    } catch (error) {
-      console.error("Fatal stream error:", error);
+    } catch (error: any) {
+      console.error("[GROQ_CHAT_CLIENT] Fatal stream error:", {
+        error: error.message,
+        stack: error.stack
+      });
       throw error;
     }
   };
@@ -347,59 +354,84 @@ export function GroqChat() {
     if (!input.trim() || isLoading) return;
 
     const userMessage = input.trim();
+    console.log("[GROQ_CHAT_CLIENT] Submitting message:", userMessage);
     setInput("");
     
     try {
-      // Cleanup any existing audio
+      console.log("[GROQ_CHAT_CLIENT] Cleaning up existing audio");
       if (audioRef.current) {
         try {
           audioRef.current.pause();
           audioRef.current = null;
-        } catch (error) {
-          console.error("Error cleaning up existing audio:", error);
+        } catch (error: any) {
+          console.error("[GROQ_CHAT_CLIENT] Error cleaning up audio:", {
+            error: error.message,
+            stack: error.stack
+          });
         }
       }
+
+      audioQueue.current.forEach(audio => {
+        try {
+          audio.pause();
+          URL.revokeObjectURL(audio.src);
+        } catch (error: any) {
+          console.error("[GROQ_CHAT_CLIENT] Error cleaning up queued audio:", {
+            error: error.message,
+            stack: error.stack
+          });
+        }
+      });
+
+      audioQueue.current = [];
+      isProcessingAudio.current = false;
       setIsPlaying(false);
       
-      // Add user message immediately
       setMessages((prev) => [...prev, { role: "user", content: userMessage }]);
-      
       setIsLoading(true);
-      try {
-        const response = await fetch("/api/groq-chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            messages: [...messages, { role: "user", content: userMessage }],
-          }),
+
+      console.log("[GROQ_CHAT_CLIENT] Sending request to API");
+      const response = await fetch("/api/groq-chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [...messages, { role: "user", content: userMessage }],
+        }),
+      });
+
+      if (!response.ok) {
+        console.error("[GROQ_CHAT_CLIENT] API request failed:", {
+          status: response.status,
+          statusText: response.statusText
         });
-
-        if (!response.ok) throw new Error(response.statusText);
-
-        await handleStreamResponse(response, (content) => {
-          setMessages(prev => {
-            const newMessages = [...prev];
-            if (newMessages[newMessages.length - 1]?.role === 'assistant') {
-              newMessages[newMessages.length - 1].content = content;
-            } else {
-              newMessages.push({ role: 'assistant', content });
-            }
-            return newMessages;
-          });
-        });
-
-      } catch (error) {
-        console.error("Error in API request:", error);
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: "assistant",
-            content: "I apologize, but I encountered an error. Please try again.",
-          },
-        ]);
+        throw new Error(response.statusText);
       }
-    } catch (error) {
-      console.error("Fatal error in form submission:", error);
+
+      console.log("[GROQ_CHAT_CLIENT] Processing stream response");
+      await handleStreamResponse(response, (content) => {
+        setMessages(prev => {
+          const newMessages = [...prev];
+          if (newMessages[newMessages.length - 1]?.role === 'assistant') {
+            newMessages[newMessages.length - 1].content = content;
+          } else {
+            newMessages.push({ role: 'assistant', content });
+          }
+          return newMessages;
+        });
+      });
+
+    } catch (error: any) {
+      console.error("[GROQ_CHAT_CLIENT] Error in form submission:", {
+        error: error.message,
+        stack: error.stack
+      });
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: "I apologize, but I encountered an error: " + error.message,
+        },
+      ]);
     } finally {
       setIsLoading(false);
     }
