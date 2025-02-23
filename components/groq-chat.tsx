@@ -51,6 +51,9 @@ export function GroqChat() {
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const audioQueue = useRef<HTMLAudioElement[]>([]);
   const isProcessingAudio = useRef(false);
+  const pendingAudioChunks = useRef<string[]>([]);
+  const isProcessingChunks = useRef(false);
+  const processingPromise = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
     // Set initial window size
@@ -182,6 +185,70 @@ export function GroqChat() {
     }
   };
 
+  const processNextAudioChunk = async () => {
+    if (pendingAudioChunks.current.length === 0) return;
+    
+    const base64Audio = pendingAudioChunks.current[0];
+    
+    try {
+      // Create audio element
+      const binaryString = window.atob(base64Audio);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      
+      const audioBlob = new Blob([bytes], { type: 'audio/mpeg' });
+      const audio = new Audio();
+      
+      // Wait for audio to be loaded
+      await new Promise((resolve, reject) => {
+        audio.src = URL.createObjectURL(audioBlob);
+        audio.oncanplay = resolve;
+        audio.onerror = reject;
+        audio.load();
+      });
+      
+      // Add to queue and remove from pending
+      audioQueue.current.push(audio);
+      pendingAudioChunks.current.shift();
+      
+      // If this is the first audio in the queue and nothing is playing, start playback
+      if (audioQueue.current.length === 1 && !isProcessingAudio.current) {
+        await playNextInQueue();
+      }
+    } catch (error) {
+      console.error("Error processing audio chunk:", error);
+      // Remove failed chunk and continue
+      pendingAudioChunks.current.shift();
+    }
+  };
+
+  const queueAudioChunk = async (base64Audio: string) => {
+    // Add to pending chunks
+    pendingAudioChunks.current.push(base64Audio);
+    
+    // Chain the processing to ensure sequential order
+    processingPromise.current = processingPromise.current
+      .then(async () => {
+        if (!isProcessingChunks.current) {
+          isProcessingChunks.current = true;
+          try {
+            // Process all pending chunks in order
+            while (pendingAudioChunks.current.length > 0) {
+              await processNextAudioChunk();
+            }
+          } finally {
+            isProcessingChunks.current = false;
+          }
+        }
+      })
+      .catch(error => {
+        console.error("Error in audio processing chain:", error);
+        isProcessingChunks.current = false;
+      });
+  };
+
   const playNextInQueue = async () => {
     if (isProcessingAudio.current || audioQueue.current.length === 0) return;
     
@@ -191,60 +258,43 @@ export function GroqChat() {
     setIsPlaying(true);
 
     try {
-      await retryWithBackoff(async () => {
-        try {
-          await audio.play();
-          // Wait for audio to finish
-          await new Promise((resolve, reject) => {
-            audio.onended = resolve;
-            audio.onerror = reject;
-          });
-        } catch (error) {
-          console.error("Audio playback error:", error);
-          throw error; // Rethrow for retry
-        }
-      }, 3, 500); // 3 retries, starting with 500ms delay
+      await audio.play();
+      // Wait for audio to finish
+      await new Promise((resolve, reject) => {
+        audio.onended = () => {
+          resolve(undefined);
+          // Cleanup current audio
+          if (audioRef.current === audio) {
+            URL.revokeObjectURL(audio.src);
+            audioQueue.current.shift();
+            audioRef.current = null;
+            setIsPlaying(false);
+            isProcessingAudio.current = false;
+            // Play next in queue if available
+            if (audioQueue.current.length > 0) {
+              playNextInQueue();
+            }
+          }
+        };
+        audio.onerror = (e) => {
+          console.error("Audio playback error:", e);
+          reject(e);
+        };
+      });
     } catch (error) {
-      console.error("Final audio playback error:", error);
-    } finally {
+      console.error("Audio playback error:", error);
+      // Cleanup on error
       if (audioRef.current === audio) {
         URL.revokeObjectURL(audio.src);
-        audioQueue.current.shift(); // Remove played audio
+        audioQueue.current.shift();
         audioRef.current = null;
         setIsPlaying(false);
         isProcessingAudio.current = false;
-        // Play next in queue if available
+        // Try next audio if available
         if (audioQueue.current.length > 0) {
           playNextInQueue();
         }
       }
-    }
-  };
-
-  const queueAudioChunk = async (base64Audio: string) => {
-    try {
-      await retryWithBackoff(async () => {
-        // Convert base64 to ArrayBuffer
-        const binaryString = window.atob(base64Audio);
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-          bytes[i] = binaryString.charCodeAt(i);
-        }
-        
-        // Create audio blob and audio element
-        const audioBlob = new Blob([bytes], { type: 'audio/mpeg' });
-        const audio = new Audio(URL.createObjectURL(audioBlob));
-        
-        // Add to queue
-        audioQueue.current.push(audio);
-        
-        // Start playing if not already processing
-        if (!isProcessingAudio.current) {
-          playNextInQueue();
-        }
-      }, 3, 500);
-    } catch (error) {
-      console.error("Error queuing audio chunk:", error);
     }
   };
 
@@ -323,13 +373,20 @@ export function GroqChat() {
     const userMessage = input.trim();
     setInput("");
     
-    // Cleanup any existing audio
+    // Clear existing audio state
     if (audioRef.current) {
       audioRef.current.pause();
-      audioRef.current.src = '';
-      audioRef.current.load();
       audioRef.current = null;
     }
+    audioQueue.current.forEach(audio => {
+      audio.pause();
+      URL.revokeObjectURL(audio.src);
+    });
+    audioQueue.current = [];
+    pendingAudioChunks.current = [];
+    isProcessingAudio.current = false;
+    isProcessingChunks.current = false;
+    processingPromise.current = Promise.resolve();
     setIsPlaying(false);
     
     // Add user message immediately
