@@ -79,35 +79,37 @@ export async function POST(req: Request) {
         let currentChunk = "";
         let lastAudioTime = Date.now();
         const MIN_AUDIO_INTERVAL = 50; // Minimum 50ms between audio chunks
-        let buffer = ""; // Add buffer for incomplete chunks
 
         const processSentences = async (text: string) => {
           const sentences = text.match(/[^.!?]+[.!?]+/g);
           if (!sentences) return text;
 
-          for (const sentence of sentences) {
-            try {
-              const audioData = await textToSpeech(sentence.trim());
-              
-              // Ensure minimum interval between audio chunks
-              const timeSinceLastAudio = Date.now() - lastAudioTime;
-              if (timeSinceLastAudio < MIN_AUDIO_INTERVAL) {
-                await new Promise(resolve => setTimeout(resolve, MIN_AUDIO_INTERVAL - timeSinceLastAudio));
+          // Process audio in the background
+          (async () => {
+            for (const sentence of sentences) {
+              try {
+                const audioData = await textToSpeech(sentence.trim());
+                
+                // Ensure minimum interval between audio chunks
+                const timeSinceLastAudio = Date.now() - lastAudioTime;
+                if (timeSinceLastAudio < MIN_AUDIO_INTERVAL) {
+                  await new Promise(resolve => setTimeout(resolve, MIN_AUDIO_INTERVAL - timeSinceLastAudio));
+                }
+                
+                // Send the audio chunk
+                const chunk = JSON.stringify({
+                  type: "audio",
+                  content: Buffer.from(audioData).toString('base64')
+                }) + "\n";
+                
+                controller.enqueue(new TextEncoder().encode(chunk));
+                lastAudioTime = Date.now();
+              } catch (error) {
+                console.error("Error generating audio for sentence:", error);
+                // Don't throw here, continue with next sentence
               }
-              
-              // Send the audio chunk
-              const chunk = JSON.stringify({
-                type: "audio",
-                content: Buffer.from(audioData).toString('base64')
-              }) + "\n";
-              
-              controller.enqueue(new TextEncoder().encode(chunk));
-              lastAudioTime = Date.now();
-            } catch (error) {
-              console.error("Error generating audio for sentence:", error);
-              // Don't throw here, continue with next sentence
             }
-          }
+          })();
 
           // Return any remaining text that didn't end with punctuation
           return text.replace(/[^.!?]+[.!?]+/g, '').trim();
@@ -120,7 +122,14 @@ export async function POST(req: Request) {
 
             currentChunk += content;
 
-            // Process complete sentences when we have them
+            // Always send text chunk immediately
+            const textChunk = JSON.stringify({ 
+              type: "chunk", 
+              content 
+            }) + "\n";
+            controller.enqueue(new TextEncoder().encode(textChunk));
+
+            // Process complete sentences for audio in the background
             if (/[.!?]/.test(content)) {
               currentChunk = await processSentences(currentChunk);
             }
@@ -128,14 +137,6 @@ export async function POST(req: Request) {
             else if (currentChunk.length > 200) {
               currentChunk = await processSentences(currentChunk + ".");
             }
-
-            // Send the text chunk
-            const textChunk = JSON.stringify({ 
-              type: "chunk", 
-              content 
-            }) + "\n";
-            
-            controller.enqueue(new TextEncoder().encode(textChunk));
           }
 
           // Process any remaining text
