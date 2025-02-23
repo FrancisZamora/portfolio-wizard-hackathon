@@ -156,6 +156,7 @@ export async function POST(req: Request) {
           }
         };
 
+
         const processAudioAsync = (text: string) => {
           audioProcessing = audioProcessing.then(async () => {
             try {
@@ -213,6 +214,7 @@ export async function POST(req: Request) {
           if (currentWord) {
             console.log("[GROQ_CHAT] Processing final word:", currentWord);
             processTextChunk(currentWord);
+
           }
 
           console.log("[GROQ_CHAT] Waiting for audio processing to complete");
