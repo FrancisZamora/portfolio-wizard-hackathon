@@ -6,9 +6,10 @@ import { Mic, Square } from 'lucide-react';
 interface FloatingMicProps {
   onTranscription: (text: string) => void;
   isLoading: boolean;
+  isInitial?: boolean;
 }
 
-export function FloatingMic({ onTranscription, isLoading }: FloatingMicProps) {
+export function FloatingMic({ onTranscription, isLoading, isInitial = false }: FloatingMicProps) {
   const [isRecording, setIsRecording] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -65,14 +66,26 @@ export function FloatingMic({ onTranscription, isLoading }: FloatingMicProps) {
     }
   };
 
+  const buttonSize = isInitial ? 'h-40 w-40' : 'h-24 w-24';
+  const iconSize = isInitial ? 'h-16 w-16' : 'h-10 w-10';
+  const glowSize = isInitial ? 'inset-[-8px]' : 'inset-[-4px]';
+  
   return (
-    <div className="fixed bottom-8 right-8">
+    <div className={isInitial ? 'relative' : 'fixed bottom-8 right-8'}>
       <div className="relative">
         {/* Outer glow and gradient ring */}
-        <div className={`absolute inset-[-4px] rounded-full bg-gradient-to-r from-purple-500 via-pink-500 to-orange-500 animate-spin-slow blur-sm transition-opacity duration-500 ${isRecording ? 'opacity-100' : 'opacity-40'}`} />
+        <div 
+          className={`absolute ${glowSize} rounded-full bg-gradient-to-r from-purple-500 via-pink-500 to-orange-500 
+                     animate-spin-slow blur-sm transition-opacity duration-500 
+                     ${isRecording ? 'opacity-100' : 'opacity-40'}`} 
+        />
         
         {/* Main gradient background */}
-        <div className={`absolute inset-0 rounded-full bg-gradient-to-br from-violet-600 via-pink-500 to-orange-500 animate-spin-slow transition-opacity duration-500 ${isRecording ? 'opacity-100' : 'opacity-70'}`} />
+        <div 
+          className={`absolute inset-0 rounded-full bg-gradient-to-br from-violet-600 via-pink-500 to-orange-500 
+                     animate-spin-slow transition-opacity duration-500 
+                     ${isRecording ? 'opacity-100' : 'opacity-70'}`} 
+        />
         
         {/* Recording animation */}
         {isRecording && (
@@ -86,7 +99,7 @@ export function FloatingMic({ onTranscription, isLoading }: FloatingMicProps) {
         <button
           onClick={isRecording ? stopRecording : startRecording}
           disabled={isLoading}
-          className={`relative h-24 w-24 rounded-full transition-all duration-500 ${
+          className={`relative ${buttonSize} rounded-full transition-all duration-500 ${
             isRecording 
               ? 'bg-gradient-to-br from-red-500 to-red-600 hover:from-red-600 hover:to-red-700' 
               : 'bg-gradient-to-br from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600'
@@ -95,13 +108,19 @@ export function FloatingMic({ onTranscription, isLoading }: FloatingMicProps) {
           <div className="absolute inset-[2px] rounded-full bg-black/20 backdrop-blur-sm" />
           <div className="relative flex items-center justify-center">
             {isRecording ? (
-              <Square className="h-10 w-10 text-white drop-shadow-lg" />
+              <Square className={`${iconSize} text-white drop-shadow-lg`} />
             ) : (
-              <Mic className="h-10 w-10 text-white drop-shadow-lg" />
+              <Mic className={`${iconSize} text-white drop-shadow-lg`} />
             )}
           </div>
         </button>
       </div>
+      
+      {isInitial && !isRecording && (
+        <div className="absolute top-full left-1/2 transform -translate-x-1/2 mt-8 text-center">
+          <p className="text-xl font-medium text-primary/80"></p>
+        </div>
+      )}
     </div>
   );
 } 
