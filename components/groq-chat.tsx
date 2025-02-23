@@ -48,6 +48,7 @@ export function GroqChat() {
   const lastMessageRef = useRef<Message | null>(null);
   const audioQueueRef = useRef<string[]>([]);
   const isPlayingRef = useRef(false);
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     // Set initial window size
@@ -79,6 +80,16 @@ export function GroqChat() {
       document.body.style.overflow = 'auto';
     };
   }, [isInitialState]);
+
+  // Add effect to scroll to bottom when messages change
+  useEffect(() => {
+    if (scrollAreaRef.current) {
+      const scrollContainer = scrollAreaRef.current.querySelector('[data-radix-scroll-area-viewport]');
+      if (scrollContainer) {
+        scrollContainer.scrollTop = scrollContainer.scrollHeight;
+      }
+    }
+  }, [messages]);
 
   const startConversation = (prompt?: string) => {
     setIsInitialState(false);
@@ -292,15 +303,15 @@ export function GroqChat() {
           <div className="relative w-screen h-screen" style={{ overflow: 'hidden' }}>
             {STARTER_PROMPTS.map((prompt, index) => {
               const centerX = windowSize.width / 2;
-              const centerY = windowSize.height / 2;
+              const centerY = (windowSize.height / 2) - (windowSize.height * 0.1); // Shift everything up by 10% of screen height
               
               // Calculate safe spacing based on screen dimensions
               const minDimension = Math.min(windowSize.width, windowSize.height);
               const safeArea = minDimension * 0.85;
               
-              // Calculate ring radii with better spacing
-              const innerRadius = safeArea * 0.28; // Slightly smaller inner radius
-              const outerRadius = safeArea * 0.48; // Slightly larger outer radius
+              // Calculate ring radii with more symmetrical spacing
+              const innerRadius = safeArea * 0.25; // Closer to microphone
+              const outerRadius = safeArea * 0.45; // Slightly closer to inner ring
               
               // Calculate number of items in each ring
               const innerRingCount = 5; // First 5 prompts
@@ -312,12 +323,12 @@ export function GroqChat() {
               if (isOuterRing) {
                 // Outer ring calculations - Perfect circle
                 const outerIndex = index - innerRingCount;
-                const angle = (outerIndex * (2 * Math.PI / outerRingCount));
+                const angle = (outerIndex * (2 * Math.PI / outerRingCount)) + Math.PI / outerRingCount; // Offset by half spacing
                 x = centerX + Math.cos(angle) * outerRadius;
                 y = centerY + Math.sin(angle) * outerRadius;
               } else {
                 // Inner ring calculations - Perfect pentagon
-                const angle = (index * (2 * Math.PI / innerRingCount));
+                const angle = (index * (2 * Math.PI / innerRingCount)) + Math.PI / innerRingCount; // Offset by half spacing
                 x = centerX + Math.cos(angle) * innerRadius;
                 y = centerY + Math.sin(angle) * innerRadius;
               }
@@ -327,7 +338,7 @@ export function GroqChat() {
               const offsetY = 0;
               
               // Adjust bubble sizes for better spacing
-              const bubbleWidth = isOuterRing ? 140 : 150; // Increased outer ring size to 140px
+              const bubbleWidth = isOuterRing ? 130 : 140; // Slightly smaller bubbles
               const halfBubble = bubbleWidth / 2;
               const margin = 20;
               
@@ -344,7 +355,7 @@ export function GroqChat() {
                     left: `${x}px`,
                     top: `${y}px`,
                     transform: 'translate(-50%, -50%)',
-                    width: isOuterRing ? 'min(140px, 10.5vw)' : 'min(150px, 11vw)', // Increased outer ring size
+                    width: isOuterRing ? 'min(130px, 10vw)' : 'min(140px, 10.5vw)', // Slightly smaller sizes
                   }}
                   initial={{ opacity: 0, scale: 0 }}
                   animate={{ opacity: 1, scale: 1 }}
@@ -396,7 +407,7 @@ export function GroqChat() {
           className="fixed"
           style={{
             left: '50%',
-            top: '50%',
+            top: '40%', // Move microphone up to match the new center
             transform: 'translate(-50%, -50%)'
           }}
           initial={{ scale: 0 }}
@@ -419,46 +430,65 @@ export function GroqChat() {
 
   return (
     <>
-      <Card className="w-full max-w-2xl mx-auto p-4 h-[600px] flex flex-col">
-        <ScrollArea className="flex-1 p-4">
+      <Card className="fixed left-0 top-0 bottom-0 w-1/2 flex flex-col
+                      border-r border-violet-500/20 shadow-lg
+                      bg-gradient-to-br from-violet-500/5 to-fuchsia-500/5
+                      backdrop-blur-sm rounded-none">
+        <ScrollArea className="flex-1 p-4" ref={scrollAreaRef}>
           {messages.map((message, index) => (
             <div
               key={index}
-              className={`mb-4 p-3 rounded-lg ${
+              className={`mb-4 p-3 rounded-lg flex items-start gap-3 ${
                 message.role === 'user'
                   ? 'bg-primary text-primary-foreground ml-auto'
-                  : 'bg-muted'
+                  : 'bg-gradient-to-br from-violet-500/10 to-fuchsia-500/10 border border-violet-500/20'
               } max-w-[80%]`}
             >
-              {message.content}
               {message.role === 'assistant' && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="ml-2"
-                  onClick={() => toggleAudio(message.content, index)}
-                >
-                  {isPlaying && currentPlayingIndex === index ? 
-                    <VolumeX className="h-4 w-4" /> : 
-                    <Volume2 className="h-4 w-4" />
-                  }
-                </Button>
+                <div className="w-6 h-6 rounded-full bg-gradient-to-br from-violet-600 via-pink-500 to-orange-500 flex items-center justify-center flex-shrink-0 relative group">
+                  {/* Animated Glow effect */}
+                  <div className="absolute inset-0 rounded-full bg-violet-500/40 blur-sm animate-pulse" />
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="relative z-10">
+                    <path d="M12 2C11.4477 2 11 2.44772 11 3V11C11 11.5523 11.4477 12 12 12C12.5523 12 13 11.5523 13 11V3C13 2.44772 12.5523 2 12 2Z" fill="white"/>
+                    <path d="M8 8C8 5.79086 9.79086 4 12 4C14.2091 4 16 5.79086 16 8V11C16 13.2091 14.2091 15 12 15C9.79086 15 8 13.2091 8 11V8Z" stroke="white" strokeWidth="2"/>
+                    <path d="M7 11C7 14.3137 9.68629 17 13 17M13 17C16.3137 17 19 14.3137 19 11M13 17V21M13 21H16M13 21H10" stroke="white" strokeWidth="2" strokeLinecap="round"/>
+                  </svg>
+                </div>
               )}
+              <div className="flex-1">
+                {message.content}
+                {message.role === 'assistant' && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="ml-2 hover:bg-violet-500/10"
+                    onClick={() => toggleAudio(message.content, index)}
+                  >
+                    {isPlaying && currentPlayingIndex === index ? 
+                      <VolumeX className="h-4 w-4" /> : 
+                      <Volume2 className="h-4 w-4" />
+                    }
+                  </Button>
+                )}
+              </div>
             </div>
           ))}
         </ScrollArea>
-        <form onSubmit={handleSubmit} className="mt-4 flex gap-2">
-          <Input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Type your message..."
-            disabled={isLoading}
-            className="flex-1"
-          />
-          <Button type="submit" disabled={isLoading}>
-            {isLoading ? 'Sending...' : 'Send'}
-          </Button>
-        </form>
+        <div className="p-4 border-t border-violet-500/20">
+          <form onSubmit={handleSubmit} className="flex gap-2">
+            <Input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Type your message..."
+              disabled={isLoading}
+              className="flex-1 bg-gradient-to-br from-violet-500/5 to-fuchsia-500/5 border-violet-500/20"
+            />
+            <Button type="submit" disabled={isLoading}
+                    className="bg-gradient-to-br from-violet-600 to-fuchsia-600 hover:from-violet-700 hover:to-fuchsia-700">
+              {isLoading ? 'Sending...' : 'Send'}
+            </Button>
+          </form>
+        </div>
       </Card>
       <div className="fixed bottom-8 right-8">
         <FloatingMic onTranscription={handleTranscription} isLoading={isLoading} />
