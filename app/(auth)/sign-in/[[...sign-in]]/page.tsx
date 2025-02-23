@@ -18,7 +18,7 @@ export default function Page() {
             socialButtonsBlockButton: "bg-background/50 border border-violet-500/20 hover:bg-violet-500/10",
             formButtonPrimary: "bg-gradient-to-br from-violet-600 to-fuchsia-600 hover:from-violet-700 hover:to-fuchsia-700",
             footerActionLink: "text-violet-500 hover:text-violet-600",
-            formFieldInput: "bg-background/50 border-violet-500/20 focus:border-violet-500",
+            formFieldInput: "bg-background/50 border-violet-500/20 focus:border-violet-500 text-white",
           },
         }}
       />

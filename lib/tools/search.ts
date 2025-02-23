@@ -72,7 +72,7 @@ async function generateSummaryWithGroq(query: string, summaries: Array<{ title: 
         content: `You are a precise and informative AI that synthesizes information from multiple sources.
 Your task is to:
 1. Analyze the provided summaries from different sources
-2. Create a concise and informative summary in EXACTLY 75 words
+2. Create a concise and informative summary in EXACTLY 50 words
 3. Focus on the most important and relevant information
 4. Write in a clear, engaging style
 5. DO NOT include any URLs or source references in the summary text

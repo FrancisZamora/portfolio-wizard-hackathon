@@ -1,11 +1,7 @@
 import type { Metadata } from 'next';
 import { Toaster } from 'sonner';
 import {
-  ClerkProvider,
-  SignInButton,
-  SignedIn,
-  SignedOut,
-  UserButton
+  ClerkProvider
 } from '@clerk/nextjs'
 import { ThemeProvider } from '@/components/theme-provider';
 
@@ -13,7 +9,7 @@ import './globals.css';
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://chat.vercel.ai'),
-  title: 'Prompt Wizard AI',
+  title: 'Portfolio Wizard AI',
   description: 'Next.js chatbot template using the AI SDK.',
 };
 

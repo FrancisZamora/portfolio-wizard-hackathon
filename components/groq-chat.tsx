@@ -944,7 +944,7 @@ export function GroqChat() {
               onChange={(e) => setInput(e.target.value)}
               placeholder="Type your message..."
               disabled={isLoading}
-              className="flex-1 bg-gradient-to-br from-violet-500/5 to-fuchsia-500/5 border-violet-500/20"
+              className="flex-1 bg-gradient-to-br from-violet-500/5 to-fuchsia-500/5 border-violet-500/20 text-white placeholder:text-white/50"
             />
             <Button type="submit" disabled={isLoading}
                     className="bg-gradient-to-br from-violet-600 to-fuchsia-600 hover:from-violet-700 hover:to-fuchsia-700">

@@ -260,14 +260,14 @@ BACKTEST SCORING:
 0.0 = Not related to backtesting
 
 SEARCH SCORING:
-1.0 = Definitely requesting information search (e.g. "search for X", "find info about Y", "what's the latest news about Z")
+1.0 = Definitely requesting information search ON THE WEB (e.g. "search for X" on the web, "find info about Y on the web", "what's the latest news about Z on the web", "THEY MUST MENTION ON THE WEB")
 0.0 = Not related to searching
 
 Example responses:
-"what's the latest news about Tesla" => "0.0 1.0"
+"what's the latest news about Tesla from the WEB" => "0.0 1.0"
 "backtest AAPL and GOOGL" => "1.0 0.0"
-"find information about Bitcoin price" => "0.0 1.0"
-"how are you" => "0.0 0.0"
+"find information about Bitcoin price from the WEB" => "0.0 1.0"
+"Lets talk about Microstrategy" => "0.0 0.0"
 
 RESPOND WITH EXACTLY TWO NUMBERS WITH A SPACE BETWEEN THEM.`
         },
@@ -326,7 +326,7 @@ Search Score: ${searchScore}
 
     // Route to appropriate handler based on score
     const useBacktest = backtestScore > 0.9;
-    const useSearch = searchScore > 0.7;
+    const useSearch = searchScore > 0.9;
     
     console.log(`
 💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩
@@ -406,7 +406,8 @@ You provide clear, informative responses about:
 - Stock market concepts and terminology
 - Investment strategies and approaches
 - Market analysis and trends
-- Financial education and insights`
+- Financial education and insights
+- Keep Responses to 75 words and under`
           },
           ...messages
         ],
