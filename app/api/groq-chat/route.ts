@@ -99,26 +99,6 @@ async function textToSpeech(text: string): Promise<ArrayBuffer> {
   }, 3, 1000);
 }
 
-// Define the graph generation tool
-const graphTool = {
-  type: "function" as const,
-  function: {
-    name: "generateGraph",
-    description: "Generate a graph with data points. The graph can be random, uptrend, downtrend, or volatile.",
-    parameters: {
-      type: "object",
-      properties: {
-        graphType: {
-          type: "string",
-          description: "The type of graph to generate",
-          enum: ["random", "uptrend", "downtrend", "volatile"]
-        }
-      },
-      required: ["graphType"]
-    }
-  }
-};
-
 // Define the backtest tool
 const backtestTool = {
   type: "function" as const,
@@ -257,36 +237,35 @@ async function executeBacktest(params: any): Promise<any> {
   }
 }
 
-// Add classifier function
-async function classifyBacktestQuery(query: string): Promise<number> {
+// Update classifier function to handle only backtest
+async function classifyQuery(query: string): Promise<{ backtestScore: number }> {
   try {
     const completion = await groq.chat.completions.create({
       messages: [
         {
           role: "system",
-          content: `You are a classifier that determines if a query is requesting stock backtesting analysis.
-Score queries from 0 to 1 where:
+          content: `You are a classifier that determines if a query is requesting stock backtesting.
+Score queries from 0 to 1 for backtesting where:
+
+BACKTEST SCORING:
 1.0 = Definitely requesting stock backtesting (e.g. "backtest AAPL", "compare TSLA and GOOGL performance")
-0.0 = Definitely general finance question (e.g. "what is a P/E ratio", "explain dividends")
+0.0 = Not related to backtesting
 
 High scoring indicators (0.9-1.0):
 - Explicit mention of "backtest" with stock symbols
-- Requesting performance comparison of specific stocks
-- Analysis of specific stock performance over time periods
-- Stock symbols present with words like "analyze", "compare", "performance"
+- Requesting performance comparison of specific stocks/crypto
+- Analysis of specific stock/crypto performance over time periods
+- Stock/crypto symbols present with words like "analyze", "compare", "performance"
+- Asking about historical returns or past performance
+- Comparing multiple assets or benchmarking against indices
 
-Medium scoring indicators (0.5-0.8):
-- Stock symbols present but no clear analysis request
-- General market performance questions
-- Historical price questions without specific analysis request
+Example queries that should score high:
+- "backtest a portfolio of AAPL and GOOGL"
+- "compare Tesla and Ford performance"
+- "analyze MSFT vs S&P 500"
+- "how did Bitcoin perform against Ethereum"
 
-Low scoring indicators (0.0-0.4):
-- General finance concepts
-- Market terminology questions
-- Investment strategy discussions
-- No stock symbols present
-
-RESPOND WITH ONLY A NUMBER between 0 and 1.`
+RESPOND WITH ONLY ONE NUMBER between 0 and 1 representing the backtestScore`
         },
         {
           role: "user",
@@ -299,11 +278,11 @@ RESPOND WITH ONLY A NUMBER between 0 and 1.`
       stream: false
     });
 
-    const score = parseFloat(completion.choices[0]?.message?.content || "0");
-    return isNaN(score) ? 0 : score;
+    const backtestScore = Number(completion.choices[0]?.message?.content?.trim()) || 0;
+    return { backtestScore: isNaN(backtestScore) ? 0 : backtestScore };
   } catch (error) {
     console.error("[CLASSIFIER_ERROR]", error);
-    return 0;
+    return { backtestScore: 0 };
   }
 }
 
@@ -322,10 +301,10 @@ export async function POST(req: Request) {
 
     // Get the last message and classify it
     const lastMessage = messages[messages.length - 1];
-    const backtestScore = await classifyBacktestQuery(lastMessage.content);
-    console.log("[GROQ_CHAT] Backtest classification score:", backtestScore);
+    const { backtestScore } = await classifyQuery(lastMessage.content);
+    console.log("[GROQ_CHAT] Classification scores:", { backtestScore });
 
-    // Route to backtest if score > 0.9, otherwise general chat
+    // Route to appropriate handler based on score
     const useBacktest = backtestScore > 0.9;
 
     console.log("[GROQ_CHAT] Creating completion with model parameters");
@@ -349,17 +328,7 @@ You MUST use the runBacktest tool when:
 - User mentions "backtest" or "generate backtest"
 - User asks to compare specific stocks (with symbols)
 - User asks about performance of specific stocks
-- User asks to analyze specific stocks
-
-Example backtest requests that MUST trigger the tool:
-- "Backtest AAPL and GOOGL"
-- "Generate backtest for TSLA"
-- "Compare Tesla and Ford stock performance"
-- "Show me how MSFT and AMZN performed in 2023"
-- "Analyze NVDA stock"
-
-If the user mentions stock symbols, ALWAYS run the backtest.
-Do not just provide general information when stock symbols are present.`
+- User asks to analyze specific stocks`
           },
           ...messages
         ],
@@ -367,7 +336,6 @@ Do not just provide general information when stock symbols are present.`
         temperature: 0.1,
         max_tokens: 1000,
         stream: true,
-        top_p: 1.0,
         tools: [backtestTool],
         tool_choice: "auto"
       } : {
@@ -379,16 +347,7 @@ You provide clear, informative responses about:
 - Stock market concepts and terminology
 - Investment strategies and approaches
 - Market analysis and trends
-- Financial education and insights
-
-Focus on being educational and informative while keeping explanations clear and accessible.
-Use examples and analogies when helpful to illustrate concepts.
-
-Remember to:
-1. Provide balanced, factual information
-2. Explain technical terms when using them
-3. Highlight both benefits and risks when discussing investment strategies
-4. Maintain a professional but conversational tone`
+- Financial education and insights`
           },
           ...messages
         ],
@@ -396,17 +355,8 @@ Remember to:
         temperature: 0.1,
         max_tokens: 1000,
         stream: true,
-        top_p: 1.0,
       }
-    ).catch(error => {
-      console.error("[GROQ_CHAT] Groq API error:", {
-        message: error.message,
-        status: error.status,
-        response: error.response,
-        stack: error.stack
-      });
-      throw error;
-    });
+    );
 
     console.log("[GROQ_CHAT] Creating streaming response");
     const stream = new ReadableStream({
