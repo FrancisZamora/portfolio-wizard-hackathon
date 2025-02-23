@@ -197,25 +197,32 @@ export function GroqChat() {
           // Wait for audio to finish
           await new Promise((resolve, reject) => {
             audio.onended = resolve;
-            audio.onerror = reject;
+            audio.onerror = (e) => {
+              console.error("Audio playback error event:", e);
+              reject(e);
+            };
           });
         } catch (error) {
-          console.error("Audio playback error:", error);
-          throw error; // Rethrow for retry
+          console.error("Audio playback attempt failed:", error);
+          throw error;
         }
-      }, 3, 500); // 3 retries, starting with 500ms delay
+      }, 3, 500);
     } catch (error) {
-      console.error("Final audio playback error:", error);
+      console.error("All audio playback retries failed:", error);
     } finally {
       if (audioRef.current === audio) {
-        URL.revokeObjectURL(audio.src);
-        audioQueue.current.shift(); // Remove played audio
-        audioRef.current = null;
-        setIsPlaying(false);
-        isProcessingAudio.current = false;
-        // Play next in queue if available
-        if (audioQueue.current.length > 0) {
-          playNextInQueue();
+        try {
+          URL.revokeObjectURL(audio.src);
+          audioQueue.current.shift();
+          audioRef.current = null;
+          setIsPlaying(false);
+          isProcessingAudio.current = false;
+          // Play next in queue if available
+          if (audioQueue.current.length > 0) {
+            await playNextInQueue();
+          }
+        } catch (error) {
+          console.error("Error in audio cleanup:", error);
         }
       }
     }
@@ -224,95 +231,114 @@ export function GroqChat() {
   const queueAudioChunk = async (base64Audio: string) => {
     try {
       await retryWithBackoff(async () => {
-        // Convert base64 to ArrayBuffer
-        const binaryString = window.atob(base64Audio);
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-          bytes[i] = binaryString.charCodeAt(i);
-        }
-        
-        // Create audio blob and audio element
-        const audioBlob = new Blob([bytes], { type: 'audio/mpeg' });
-        const audio = new Audio(URL.createObjectURL(audioBlob));
-        
-        // Add to queue
-        audioQueue.current.push(audio);
-        
-        // Start playing if not already processing
-        if (!isProcessingAudio.current) {
-          playNextInQueue();
+        try {
+          // Convert base64 to ArrayBuffer
+          const binaryString = window.atob(base64Audio);
+          const bytes = new Uint8Array(binaryString.length);
+          for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+          }
+          
+          try {
+            // Create audio blob and audio element
+            const audioBlob = new Blob([bytes], { type: 'audio/mpeg' });
+            const audio = new Audio(URL.createObjectURL(audioBlob));
+            
+            try {
+              // Add to queue
+              audioQueue.current.push(audio);
+              
+              // Start playing if not already processing
+              if (!isProcessingAudio.current) {
+                await playNextInQueue();
+              }
+            } catch (error) {
+              console.error("Error queuing or playing audio:", error);
+              throw error;
+            }
+          } catch (error) {
+            console.error("Error creating audio blob/element:", error);
+            throw error;
+          }
+        } catch (error) {
+          console.error("Error processing base64 audio:", error);
+          throw error;
         }
       }, 3, 500);
     } catch (error) {
-      console.error("Error queuing audio chunk:", error);
+      console.error("Fatal error in audio chunk processing:", error);
     }
   };
 
   const handleStreamResponse = async (response: Response, onChunk: (content: string) => void) => {
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error("No reader available");
-
-    let fullContent = "";
-    let buffer = ""; // Buffer for incomplete chunks
-    const decoder = new TextDecoder();
-
     try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error("No reader available");
 
-        // Append new data to buffer
-        buffer += decoder.decode(value, { stream: true });
+      let fullContent = "";
+      let buffer = ""; // Buffer for incomplete chunks
+      const decoder = new TextDecoder();
 
-        // Process complete lines
-        let newlineIndex;
-        while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
-          const line = buffer.slice(0, newlineIndex);
-          buffer = buffer.slice(newlineIndex + 1);
-
-          if (!line.trim()) continue;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
           try {
-            const data = JSON.parse(line);
-            
-            switch (data.type) {
-              case "chunk":
-                fullContent += data.content;
-                onChunk(fullContent);
-                break;
-              case "audio":
-                await queueAudioChunk(data.content);
-                break;
-              case "error":
-                console.error("Stream error:", data.content);
-                throw new Error(data.content);
-                break;
-              case "done":
-                return;
-            }
-          } catch (e) {
-            console.error("Error parsing chunk:", e, "Line:", line);
-          }
-        }
-      }
+            // Append new data to buffer
+            buffer += decoder.decode(value, { stream: true });
 
-      // Process any remaining data in buffer
-      if (buffer.trim()) {
-        try {
-          const data = JSON.parse(buffer);
-          if (data.type === "chunk") {
-            fullContent += data.content;
-            onChunk(fullContent);
+            // Process complete lines
+            let newlineIndex;
+            while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
+              const line = buffer.slice(0, newlineIndex);
+              buffer = buffer.slice(newlineIndex + 1);
+
+              if (!line.trim()) continue;
+
+              try {
+                const data = JSON.parse(line);
+                
+                switch (data.type) {
+                  case "chunk":
+                    try {
+                      fullContent += data.content;
+                      onChunk(fullContent);
+                    } catch (error) {
+                      console.error("Error processing text chunk:", error);
+                    }
+                    break;
+                  case "audio":
+                    try {
+                      await queueAudioChunk(data.content);
+                    } catch (error) {
+                      console.error("Error processing audio chunk:", error);
+                    }
+                    break;
+                  case "error":
+                    console.error("Stream error:", data.content);
+                    throw new Error(data.content);
+                    break;
+                  case "done":
+                    return;
+                }
+              } catch (e) {
+                console.error("Error parsing JSON chunk:", e, "Line:", line);
+              }
+            }
+          } catch (error) {
+            console.error("Error processing stream chunk:", error);
           }
-        } catch (e) {
-          console.error("Error parsing final chunk:", e);
         }
+      } catch (error) {
+        console.error("Error reading stream:", error);
+        throw error;
+      } finally {
+        reader.releaseLock();
       }
     } catch (error) {
-      console.error("Stream processing error:", error);
+      console.error("Fatal stream error:", error);
       throw error;
-    } finally {
-      reader.releaseLock();
     }
   };
 
@@ -323,51 +349,57 @@ export function GroqChat() {
     const userMessage = input.trim();
     setInput("");
     
-    // Cleanup any existing audio
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.src = '';
-      audioRef.current.load();
-      audioRef.current = null;
-    }
-    setIsPlaying(false);
-    
-    // Add user message immediately
-    setMessages((prev) => [...prev, { role: "user", content: userMessage }]);
-    
-    setIsLoading(true);
     try {
-      const response = await fetch("/api/groq-chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages: [...messages, { role: "user", content: userMessage }],
-        }),
-      });
-
-      if (!response.ok) throw new Error(response.statusText);
-
-      await handleStreamResponse(response, (content) => {
-        setMessages(prev => {
-          const newMessages = [...prev];
-          if (newMessages[newMessages.length - 1]?.role === 'assistant') {
-            newMessages[newMessages.length - 1].content = content;
-          } else {
-            newMessages.push({ role: 'assistant', content });
-          }
-          return newMessages;
+      // Cleanup any existing audio
+      if (audioRef.current) {
+        try {
+          audioRef.current.pause();
+          audioRef.current = null;
+        } catch (error) {
+          console.error("Error cleaning up existing audio:", error);
+        }
+      }
+      setIsPlaying(false);
+      
+      // Add user message immediately
+      setMessages((prev) => [...prev, { role: "user", content: userMessage }]);
+      
+      setIsLoading(true);
+      try {
+        const response = await fetch("/api/groq-chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            messages: [...messages, { role: "user", content: userMessage }],
+          }),
         });
-      });
 
+        if (!response.ok) throw new Error(response.statusText);
+
+        await handleStreamResponse(response, (content) => {
+          setMessages(prev => {
+            const newMessages = [...prev];
+            if (newMessages[newMessages.length - 1]?.role === 'assistant') {
+              newMessages[newMessages.length - 1].content = content;
+            } else {
+              newMessages.push({ role: 'assistant', content });
+            }
+            return newMessages;
+          });
+        });
+
+      } catch (error) {
+        console.error("Error in API request:", error);
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: "I apologize, but I encountered an error. Please try again.",
+          },
+        ]);
+      }
     } catch (error) {
-      console.error("Error:", error);
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: "I apologize, but I encountered an error. Please try again.",
-        },
-      ]);
+      console.error("Fatal error in form submission:", error);
     } finally {
       setIsLoading(false);
     }

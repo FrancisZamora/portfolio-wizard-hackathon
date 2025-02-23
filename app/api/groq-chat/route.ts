@@ -68,79 +68,203 @@ export async function POST(req: Request) {
     const completion = await groq.chat.completions.create({
       messages,
       model: "llama-3.3-70b-versatile",
-      temperature: 0.4,
+      temperature: 0.1,
       max_tokens: 1000,
-      stream: true
+      stream: true,
+      top_p: 1.0,
+      frequency_penalty: 0,
+      presence_penalty: 0
     });
 
     // Create a streaming response
     const stream = new ReadableStream({
       async start(controller) {
-        let currentChunk = "";
         let lastAudioTime = Date.now();
         const MIN_AUDIO_INTERVAL = 50; // Minimum 50ms between audio chunks
-        let buffer = ""; // Add buffer for incomplete chunks
+        let audioBuffer = ""; // Separate buffer for audio processing
+        let currentWord = ""; // Buffer for current word
+
+        // Create separate promise chain for audio processing
+        let audioProcessing = Promise.resolve();
+
+        const processTextChunk = (content: string) => {
+          try {
+            const textChunk = JSON.stringify({ 
+              type: "chunk", 
+              content: content 
+            }) + "\n";
+            controller.enqueue(new TextEncoder().encode(textChunk));
+          } catch (error) {
+            console.error("Error processing text chunk:", error);
+            controller.enqueue(
+              new TextEncoder().encode(
+                JSON.stringify({ 
+                  type: "error", 
+                  content: "Text chunk processing error" 
+                }) + "\n"
+              )
+            );
+          }
+        };
 
         const processSentences = async (text: string) => {
-          const sentences = text.match(/[^.!?]+[.!?]+/g);
-          if (!sentences) return text;
+          try {
+            const sentences = text.match(/[^.!?]+[.!?]+/g);
+            if (!sentences) return text;
 
-          for (const sentence of sentences) {
-            try {
-              const audioData = await textToSpeech(sentence.trim());
-              
-              // Ensure minimum interval between audio chunks
-              const timeSinceLastAudio = Date.now() - lastAudioTime;
-              if (timeSinceLastAudio < MIN_AUDIO_INTERVAL) {
-                await new Promise(resolve => setTimeout(resolve, MIN_AUDIO_INTERVAL - timeSinceLastAudio));
+            for (const sentence of sentences) {
+              try {
+                const audioData = await textToSpeech(sentence.trim());
+                
+                // Ensure minimum interval between audio chunks
+                const timeSinceLastAudio = Date.now() - lastAudioTime;
+                if (timeSinceLastAudio < MIN_AUDIO_INTERVAL) {
+                  await new Promise(resolve => setTimeout(resolve, MIN_AUDIO_INTERVAL - timeSinceLastAudio));
+                }
+                
+                // Send the audio chunk
+                const chunk = JSON.stringify({
+                  type: "audio",
+                  content: Buffer.from(audioData).toString('base64')
+                }) + "\n";
+                
+                controller.enqueue(new TextEncoder().encode(chunk));
+                lastAudioTime = Date.now();
+              } catch (error) {
+                console.error("Error processing individual sentence:", error);
+                controller.enqueue(
+                  new TextEncoder().encode(
+                    JSON.stringify({ 
+                      type: "error", 
+                      content: "Audio generation error for sentence" 
+                    }) + "\n"
+                  )
+                );
+                // Continue with next sentence
               }
-              
-              // Send the audio chunk
-              const chunk = JSON.stringify({
-                type: "audio",
-                content: Buffer.from(audioData).toString('base64')
-              }) + "\n";
-              
-              controller.enqueue(new TextEncoder().encode(chunk));
-              lastAudioTime = Date.now();
-            } catch (error) {
-              console.error("Error generating audio for sentence:", error);
-              // Don't throw here, continue with next sentence
             }
-          }
 
-          // Return any remaining text that didn't end with punctuation
-          return text.replace(/[^.!?]+[.!?]+/g, '').trim();
+            // Return any remaining text that didn't end with punctuation
+            return text.replace(/[^.!?]+[.!?]+/g, '').trim();
+          } catch (error) {
+            console.error("Error in sentence processing:", error);
+            controller.enqueue(
+              new TextEncoder().encode(
+                JSON.stringify({ 
+                  type: "error", 
+                  content: "Sentence processing error" 
+                }) + "\n"
+              )
+            );
+            return text;
+          }
+        };
+
+        const processAudioAsync = (text: string) => {
+          audioProcessing = audioProcessing.then(async () => {
+            try {
+              if (/[.!?]/.test(text)) {
+                audioBuffer = await processSentences(audioBuffer);
+              }
+              else if (audioBuffer.length > 200) {
+                audioBuffer = await processSentences(audioBuffer + ".");
+              }
+            } catch (error) {
+              console.error("Error in audio processing:", error);
+              controller.enqueue(
+                new TextEncoder().encode(
+                  JSON.stringify({ 
+                    type: "error", 
+                    content: "Audio processing error" 
+                  }) + "\n"
+                )
+              );
+            }
+          }).catch(error => {
+            console.error("Fatal audio processing error:", error);
+            controller.enqueue(
+              new TextEncoder().encode(
+                JSON.stringify({ 
+                  type: "error", 
+                  content: "Fatal audio processing error" 
+                }) + "\n"
+              )
+            );
+          });
         };
 
         try {
           for await (const chunk of completion) {
-            const content = chunk.choices[0]?.delta?.content || "";
-            if (!content) continue;
+            try {
+              const content = chunk.choices[0]?.delta?.content || "";
+              if (!content) continue;
 
-            currentChunk += content;
+              // Add to audio buffer and process audio asynchronously
+              audioBuffer += content;
+              processAudioAsync(audioBuffer);
 
-            // Process complete sentences when we have them
-            if (/[.!?]/.test(content)) {
-              currentChunk = await processSentences(currentChunk);
+              // Process text instantly without waiting for audio
+              try {
+                for (let i = 0; i < content.length; i++) {
+                  const char = content[i];
+                  if (char === ' ' || char === '\n') {
+                    if (currentWord) {
+                      processTextChunk(currentWord + char);
+                      currentWord = "";
+                    } else {
+                      processTextChunk(char);
+                    }
+                  } else {
+                    currentWord += char;
+                  }
+                }
+              } catch (error) {
+                console.error("Error processing text content:", error);
+                controller.enqueue(
+                  new TextEncoder().encode(
+                    JSON.stringify({ 
+                      type: "error", 
+                      content: "Text content processing error" 
+                    }) + "\n"
+                  )
+                );
+              }
+            } catch (error) {
+              console.error("Error processing completion chunk:", error);
+              controller.enqueue(
+                new TextEncoder().encode(
+                  JSON.stringify({ 
+                    type: "error", 
+                    content: "Completion chunk processing error" 
+                  }) + "\n"
+                )
+              );
             }
-            // Or when the chunk is getting too long
-            else if (currentChunk.length > 200) {
-              currentChunk = await processSentences(currentChunk + ".");
-            }
-
-            // Send the text chunk
-            const textChunk = JSON.stringify({ 
-              type: "chunk", 
-              content 
-            }) + "\n";
-            
-            controller.enqueue(new TextEncoder().encode(textChunk));
           }
 
-          // Process any remaining text
-          if (currentChunk.trim()) {
-            await processSentences(currentChunk + ".");
+          // Process any remaining word immediately
+          if (currentWord) {
+            processTextChunk(currentWord);
+          }
+
+          try {
+            // Wait for audio processing to complete before sending done marker
+            await audioProcessing;
+
+            // Process any remaining audio buffer
+            if (audioBuffer.trim()) {
+              await processSentences(audioBuffer + ".");
+            }
+          } catch (error) {
+            console.error("Error in final audio processing:", error);
+            controller.enqueue(
+              new TextEncoder().encode(
+                JSON.stringify({ 
+                  type: "error", 
+                  content: "Final audio processing error" 
+                }) + "\n"
+              )
+            );
           }
 
           // Send end marker
@@ -150,13 +274,12 @@ export async function POST(req: Request) {
             )
           );
         } catch (error) {
-          console.error("Stream processing error:", error);
-          // Send error message to client
+          console.error("Fatal stream processing error:", error);
           controller.enqueue(
             new TextEncoder().encode(
               JSON.stringify({ 
                 type: "error", 
-                content: "Stream processing error" 
+                content: "Fatal stream processing error" 
               }) + "\n"
             )
           );
