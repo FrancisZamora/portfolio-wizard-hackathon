@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-const VOICE_ID = "21m00Tcm4TlvDq8ikWAM"; // Rachel voice
+const VOICE_ID = "nPczCjzI2devNBz1zQrb"; // Rachel voice
 
 export async function POST(req: Request) {
   try {

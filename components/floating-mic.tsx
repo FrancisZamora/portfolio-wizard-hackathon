@@ -118,7 +118,6 @@ export function FloatingMic({ onTranscription, isLoading, isInitial = false }: F
       
       {isInitial && !isRecording && (
         <div className="absolute top-full left-1/2 transform -translate-x-1/2 mt-8 text-center">
-          <p className="text-xl font-medium text-primary/80"></p>
         </div>
       )}
     </div>

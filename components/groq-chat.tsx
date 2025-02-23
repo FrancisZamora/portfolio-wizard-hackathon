@@ -9,6 +9,7 @@ import { Volume2, VolumeX } from 'lucide-react';
 import { FloatingMic } from "@/components/floating-mic";
 import { motion, AnimatePresence } from "framer-motion";
 import { StockPanel } from "@/components/stock-panel";
+import wizardLogo from "@/images/wizard.png";
 
 interface Message {
   role: 'user' | 'assistant';
@@ -299,6 +300,10 @@ export function GroqChat() {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background relative overflow-hidden"
            style={{ height: '100vh', overflow: 'hidden' }}>
+        {/* Logo in top left */}
+        <div className="fixed top-0 left-0 z-50">
+          <img src={wizardLogo.src} alt="Wizard Logo" className="w-12 h-12" />
+        </div>
         {/* Starter prompts container */}
         <div className="fixed inset-0 pointer-events-none" style={{ overflow: 'hidden' }}>
           <div className="relative w-screen h-screen" style={{ overflow: 'hidden' }}>
@@ -435,7 +440,8 @@ export function GroqChat() {
                       border-r border-violet-500/20 shadow-lg
                       bg-gradient-to-br from-violet-500/5 to-fuchsia-500/5
                       backdrop-blur-sm rounded-none">
-        <div className="p-4 border-b border-violet-500/20">
+        <div className="p-4 border-b border-violet-500/20 flex items-center gap-4">
+          <img src={wizardLogo.src} alt="Wizard Logo" className="w-8 h-8" />
           <h1 className="text-2xl font-semibold bg-gradient-to-r from-violet-500 to-fuchsia-500 bg-clip-text text-transparent">
             Chat
           </h1>
