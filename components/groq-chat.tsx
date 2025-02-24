@@ -11,23 +11,58 @@ import { motion, AnimatePresence } from "framer-motion";
 import { StockPanel } from "@/components/stock-panel";
 import wizardLogo from "@/images/wizard.png";
 import { Line } from 'react-chartjs-2';
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend,
+  Filler
+} from 'chart.js';
+
+// Register ChartJS components
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend,
+  Filler
+);
 
 interface Message {
   role: 'user' | 'assistant';
   content: string;
 }
 
-interface GraphData {
+interface Dataset {
+  label: string;
+  data: number[];
+  borderColor: string;
+  backgroundColor: string;
+  fill: boolean;
+  tension: number;
+}
+
+interface GraphContent {
   labels: string[];
-  datasets: {
-    label: string;
-    data: number[];
-    borderColor: string;
-    backgroundColor: string;
-    fill: boolean;
-    tension: number;
-  }[];
+  datasets: Dataset[];
   plotImage?: string;
+}
+
+interface GraphData {
+  type: string;
+  content: GraphContent;
+}
+
+interface Source {
+  title: string;
+  url: string;
 }
 
 const STARTER_PROMPTS = [
@@ -52,10 +87,52 @@ const STARTER_PROMPTS = [
   "Commodities"
 ];
 
+const SourcesDisplay = ({ sources }: { sources: Source[] }) => {
+  if (!sources?.length) return null;
+  
+  return (
+    <div className="mt-4 p-4 rounded-lg bg-gradient-to-br from-violet-500/5 to-fuchsia-500/5 border border-violet-500/20">
+      <h3 className="font-medium mb-2 text-lg bg-gradient-to-r from-violet-500 to-fuchsia-500 bg-clip-text text-transparent">Sources:</h3>
+      <ul className="space-y-2">
+        {sources.map((source, index) => (
+          <li key={index} className="flex items-start gap-2">
+            <span className="w-6 h-6 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white text-sm flex-shrink-0">
+              {index + 1}
+            </span>
+            <a 
+              href={source.url} 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="text-violet-500 hover:text-fuchsia-500 transition-colors duration-200 hover:underline"
+            >
+              {source.title || source.url}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+};
+
+const SearchingIndicator = () => (
+  <motion.div
+    initial={{ opacity: 0 }}
+    animate={{ opacity: 1 }}
+    exit={{ opacity: 0 }}
+    className="flex items-center gap-3 p-3 rounded-lg bg-gradient-to-br from-violet-500/10 to-fuchsia-500/10 border border-violet-500/20"
+  >
+    <div className="w-6 h-6 rounded-full border-2 border-violet-500 border-t-transparent animate-spin" />
+    <span className="text-lg font-medium bg-gradient-to-r from-violet-500 to-fuchsia-500 bg-clip-text text-transparent">
+      Researching...
+    </span>
+  </motion.div>
+);
+
 export function GroqChat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentPlayingIndex, setCurrentPlayingIndex] = useState<number | null>(null);
   const [isInitialState, setIsInitialState] = useState(true);
@@ -69,6 +146,8 @@ export function GroqChat() {
   const isProcessingChunks = useRef(false);
   const processingPromise = useRef<Promise<void>>(Promise.resolve());
   const [currentGraph, setCurrentGraph] = useState<GraphData | null>(null);
+  const [currentSources, setCurrentSources] = useState<Source[]>([]);
+  const searchTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     // Set initial window size
@@ -124,6 +203,15 @@ export function GroqChat() {
         URL.revokeObjectURL(audio.src);
       });
       audioQueue.current = [];
+    };
+  }, []);
+
+  // Add cleanup for the timer
+  useEffect(() => {
+    return () => {
+      if (searchTimerRef.current) {
+        clearTimeout(searchTimerRef.current);
+      }
     };
   }, []);
 
@@ -380,7 +468,7 @@ export function GroqChat() {
               try {
                 console.log("[GROQ_CHAT_CLIENT] Processing line:", line);
                 const data = JSON.parse(line);
-                
+
                 switch (data.type) {
                   case "chunk":
                     console.log("[GROQ_CHAT_CLIENT] Processing text chunk");
@@ -389,18 +477,40 @@ export function GroqChat() {
                     break;
                   case "graph":
                     console.log("[GROQ_CHAT_CLIENT] Processing graph data");
-                    setCurrentGraph(data.content);
+                    setCurrentGraph(data);
                     break;
                   case "audio":
                     console.log("[GROQ_CHAT_CLIENT] Processing audio chunk");
                     await queueAudioChunk(data.content);
                     break;
-                  case "error":
-                    console.error("[GROQ_CHAT_CLIENT] Received error from server:", data.content);
-                    throw new Error(data.content);
+                  case "search_results":
+                    console.log("[GROQ_CHAT_CLIENT] Processing search results");
+                    fullContent += data.content.text;
+                    onChunk(fullContent);
+                    
+                    if (data.content.sources?.length > 0) {
+                      setCurrentSources(data.content.sources);
+                    }
+                    break;
+                  case "tool_call":
+                    if (data.tool === "search") {
+                      // Clear any existing timer
+                      if (searchTimerRef.current) {
+                        clearTimeout(searchTimerRef.current);
+                      }
+                      setIsSearching(true);
+                      // Set new timer to hide the indicator after 10 seconds
+                      searchTimerRef.current = setTimeout(() => {
+                        setIsSearching(false);
+                      }, 10000);
+                    }
+                    break;
                   case "done":
                     console.log("[GROQ_CHAT_CLIENT] Received done signal");
                     return;
+                  case "error":
+                    console.error("[GROQ_CHAT_CLIENT] Received error from server:", data.content);
+                    throw new Error(data.content);
                   default:
                     console.warn("[GROQ_CHAT_CLIENT] Unknown chunk type:", data.type);
                 }
@@ -803,21 +913,29 @@ export function GroqChat() {
               <div className="flex-1">
                 {message.content}
                 {message.role === 'assistant' && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="ml-2 hover:bg-violet-500/10"
-                    onClick={() => toggleAudio(message.content, index)}
-                  >
-                    {isPlaying && currentPlayingIndex === index ? 
-                      <VolumeX className="h-4 w-4" /> : 
-                      <Volume2 className="h-4 w-4" />
-                    }
-                  </Button>
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="ml-2 hover:bg-violet-500/10"
+                      onClick={() => toggleAudio(message.content, index)}
+                    >
+                      {isPlaying && currentPlayingIndex === index ? 
+                        <VolumeX className="h-4 w-4" /> : 
+                        <Volume2 className="h-4 w-4" />
+                      }
+                    </Button>
+                    {index === messages.length - 1 && currentSources.length > 0 && (
+                      <SourcesDisplay sources={currentSources} />
+                    )}
+                  </>
                 )}
               </div>
             </div>
           ))}
+          <AnimatePresence>
+            {isSearching && <SearchingIndicator />}
+          </AnimatePresence>
         </ScrollArea>
         <div className="p-4 border-t border-violet-500/20">
           <form onSubmit={handleSubmit} className="flex gap-2">
@@ -839,116 +957,124 @@ export function GroqChat() {
                     border-l border-violet-500/20 shadow-lg
                     bg-gradient-to-br from-violet-500/5 to-fuchsia-500/5
                     backdrop-blur-sm rounded-none p-6">
-        {currentGraph ? (
+        {currentGraph && (
           <div className="flex flex-col h-full">
             <div className="mb-6">
               <h2 className="text-2xl font-bold bg-gradient-to-r from-violet-500 to-fuchsia-500 bg-clip-text text-transparent mb-2">
                 Portfolio Performance
               </h2>
               <div className="flex gap-4">
-                <div className="flex items-center">
-                  <div className="w-3 h-3 rounded-full bg-[rgb(139,92,246)] mr-2"></div>
-                  <span>Strategy Returns</span>
-                </div>
-                <div className="flex items-center">
-                  <div className="w-3 h-3 rounded-full bg-[rgb(244,114,182)] mr-2"></div>
-                  <span>Benchmark (S&P 500)</span>
-                </div>
+                {currentGraph.content?.datasets?.map((dataset, index) => (
+                  <div
+                    key={index}
+                    className="flex items-center gap-2"
+                  >
+                    <div
+                      className="w-3 h-3 rounded-full"
+                      style={{ backgroundColor: dataset.borderColor }}
+                    />
+                    <span className="text-sm text-gray-600">
+                      {dataset.label}
+                    </span>
+                  </div>
+                ))}
               </div>
-            </div>
-            
-            <div className="flex-1 min-h-[400px] grid grid-cols-1 gap-6">
-              {/* Interactive Chart.js plot */}
-              <div className="w-full h-[400px]">
-                <Line
-                  data={currentGraph}
-                  options={{
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                      legend: {
-                        display: false
+           
+
+              {/* Show interactive chart */}
+              {currentGraph.content?.datasets?.length > 0 && (
+                <div className="mt-4 bg-white rounded-lg p-4 shadow-sm" style={{ height: '400px' }}>
+                  <Line
+                    data={{
+                      labels: currentGraph.content.labels,
+                      datasets: currentGraph.content.datasets
+                    }}
+                    options={{
+                      responsive: true,
+                      maintainAspectRatio: false,
+                      plugins: {
+                        legend: {
+                          display: false
+                        },
+                        tooltip: {
+                          mode: 'index',
+                          intersect: false,
+                          callbacks: {
+                            label: function(context) {
+                              return `${context.dataset.label}: ${context.parsed.y.toFixed(2)}%`;
+                            }
+                          }
+                        },
                       },
-                      tooltip: {
-                        mode: 'index',
+                      scales: {
+                        y: {
+                          grid: {
+                            color: 'rgba(139, 92, 246, 0.1)',
+                          },
+                          border: {
+                            color: 'rgba(139, 92, 246, 0.2)',
+                          },
+                          ticks: {
+                            color: 'rgba(139, 92, 246, 0.8)',
+                            callback: function(value) {
+                              return value + '%';
+                            }
+                          }
+                        },
+                        x: {
+                          grid: {
+                            color: 'rgba(139, 92, 246, 0.1)',
+                          },
+                          border: {
+                            color: 'rgba(139, 92, 246, 0.2)',
+                          },
+                          ticks: {
+                            color: 'rgba(139, 92, 246, 0.8)',
+                            maxRotation: 0,
+                            autoSkip: true,
+                            maxTicksLimit: 10
+                          }
+                        }
+                      },
+                      interaction: {
                         intersect: false,
-                        callbacks: {
-                          label: function(context) {
-                            return `${context.dataset.label}: ${context.parsed.y.toFixed(2)}%`;
-                          }
-                        }
+                        mode: 'index',
                       },
-                    },
-                    scales: {
-                      y: {
-                        grid: {
-                          color: 'rgba(139, 92, 246, 0.1)',
-                        },
-                        border: {
-                          color: 'rgba(139, 92, 246, 0.2)',
-                        },
-                        ticks: {
-                          color: 'rgba(139, 92, 246, 0.8)',
-                          callback: function(value) {
-                            return value + '%';
-                          }
-                        }
-                      },
-                      x: {
-                        grid: {
-                          color: 'rgba(139, 92, 246, 0.1)',
-                        },
-                        border: {
-                          color: 'rgba(139, 92, 246, 0.2)',
-                        },
-                        ticks: {
-                          color: 'rgba(139, 92, 246, 0.8)',
-                          maxRotation: 0,
-                          autoSkip: true,
-                          maxTicksLimit: 10
-                        }
-                      }
-                    },
-                    interaction: {
-                      intersect: false,
-                      mode: 'index',
-                    },
-                  }}
-                />
-              </div>
+                    }}
+                  />
+                </div>
+              )}
 
-            </div>
-
-            <div className="mt-6 grid grid-cols-2 gap-4">
-              <div className="p-4 rounded-lg bg-gradient-to-br from-violet-500/10 to-fuchsia-500/10 border border-violet-500/20">
-                <div className="text-sm text-violet-300 mb-1">Strategy Performance</div>
-                <div className="text-xl font-semibold">
-                  {currentGraph.datasets[0].data[currentGraph.datasets[0].data.length - 1].toFixed(2)}%
+              {/* Show metrics */}
+              <div className="grid grid-cols-2 gap-4 mt-4">
+                <div className="bg-white rounded-lg p-4 shadow-sm">
+                  <h3 className="text-sm font-medium text-gray-500">Strategy Performance</h3>
+                  <p className="mt-1 text-2xl font-semibold text-gray-900">
+                    {currentGraph.content?.datasets?.[0]?.data?.[currentGraph.content.datasets[0].data.length - 1]?.toFixed(2)}%
+                  </p>
                 </div>
-              </div>
-              <div className="p-4 rounded-lg bg-gradient-to-br from-violet-500/10 to-fuchsia-500/10 border border-violet-500/20">
-                <div className="text-sm text-violet-300 mb-1">Benchmark Performance</div>
-                <div className="text-xl font-semibold">
-                  {currentGraph.datasets[1].data[currentGraph.datasets[1].data.length - 1].toFixed(2)}%
+                <div className="bg-white rounded-lg p-4 shadow-sm">
+                  <h3 className="text-sm font-medium text-gray-500">Benchmark Performance</h3>
+                  <p className="mt-1 text-2xl font-semibold text-gray-900">
+                    {currentGraph.content?.datasets?.[1]?.data?.[currentGraph.content.datasets[1].data.length - 1]?.toFixed(2)}%
+                  </p>
                 </div>
-              </div>
-              <div className="p-4 rounded-lg bg-gradient-to-br from-violet-500/10 to-fuchsia-500/10 border border-violet-500/20">
-                <div className="text-sm text-violet-300 mb-1">Relative Performance</div>
-                <div className="text-xl font-semibold">
-                  {(currentGraph.datasets[0].data[currentGraph.datasets[0].data.length - 1] - 
-                    currentGraph.datasets[1].data[currentGraph.datasets[1].data.length - 1]).toFixed(2)}%
+                <div className="bg-white rounded-lg p-4 shadow-sm">
+                  <h3 className="text-sm font-medium text-gray-500">Relative Performance</h3>
+                  <p className="mt-1 text-2xl font-semibold text-gray-900">
+                    {((currentGraph.content?.datasets?.[0]?.data?.[currentGraph.content.datasets[0].data.length - 1] || 0) - 
+                      (currentGraph.content?.datasets?.[1]?.data?.[currentGraph.content.datasets[1].data.length - 1] || 0)).toFixed(2)}%
+                  </p>
                 </div>
-              </div>
-              <div className="p-4 rounded-lg bg-gradient-to-br from-violet-500/10 to-fuchsia-500/10 border border-violet-500/20">
-                <div className="text-sm text-violet-300 mb-1">Trading Days</div>
-                <div className="text-xl font-semibold">
-                  {currentGraph.labels.length}
+                <div className="bg-white rounded-lg p-4 shadow-sm">
+                  <h3 className="text-sm font-medium text-gray-500">Trading Days</h3>
+                  <p className="mt-1 text-2xl font-semibold text-gray-900">
+                    {currentGraph.content?.labels?.length || 0}
+                  </p>
                 </div>
               </div>
             </div>
           </div>
-        ) : (
-          <StockPanel />
         )}
       </div>
       <div className="fixed bottom-8 right-8">

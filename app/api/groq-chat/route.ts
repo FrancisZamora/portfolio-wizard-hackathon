@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import Groq from "groq-sdk";
+import { searchTool, executeSearch } from '@/lib/tools/groq-tools';
 
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY!
@@ -98,26 +99,6 @@ async function textToSpeech(text: string): Promise<ArrayBuffer> {
     return await response.arrayBuffer();
   }, 3, 1000);
 }
-
-// Define the graph generation tool
-const graphTool = {
-  type: "function" as const,
-  function: {
-    name: "generateGraph",
-    description: "Generate a graph with data points. The graph can be random, uptrend, downtrend, or volatile.",
-    parameters: {
-      type: "object",
-      properties: {
-        graphType: {
-          type: "string",
-          description: "The type of graph to generate",
-          enum: ["random", "uptrend", "downtrend", "volatile"]
-        }
-      },
-      required: ["graphType"]
-    }
-  }
-};
 
 // Define the backtest tool
 const backtestTool = {
@@ -257,36 +238,38 @@ async function executeBacktest(params: any): Promise<any> {
   }
 }
 
-// Add classifier function
-async function classifyBacktestQuery(query: string): Promise<number> {
+// Update classifier function to handle only backtest
+async function classifyQuery(query: string): Promise<{ backtestScore: number, searchScore: number }> {
   try {
+    console.log(`
+💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩
+CLASSIFYING QUERY: "${query}"
+💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩
+`);
+    
     const completion = await groq.chat.completions.create({
       messages: [
         {
           role: "system",
-          content: `You are a classifier that determines if a query is requesting stock backtesting analysis.
-Score queries from 0 to 1 where:
-1.0 = Definitely requesting stock backtesting (e.g. "backtest AAPL", "compare TSLA and GOOGL performance")
-0.0 = Definitely general finance question (e.g. "what is a P/E ratio", "explain dividends")
+          content: `You are a classifier that determines if a query is requesting stock backtesting or searching for information.
+Score queries from 0 to 1 for backtesting and searching.
+YOU MUST RETURN EXACTLY TWO NUMBERS separated by a space, representing backtestScore and searchScore.
 
-High scoring indicators (0.9-1.0):
-- Explicit mention of "backtest" with stock symbols
-- Requesting performance comparison of specific stocks
-- Analysis of specific stock performance over time periods
-- Stock symbols present with words like "analyze", "compare", "performance"
+BACKTEST SCORING:
+1.0 = Definitely requesting stock backtesting
+0.0 = Not related to backtesting
 
-Medium scoring indicators (0.5-0.8):
-- Stock symbols present but no clear analysis request
-- General market performance questions
-- Historical price questions without specific analysis request
+SEARCH SCORING:
+1.0 = Definitely requesting information search (e.g. "search for X", "find info about Y", "what's the latest news about Z")
+0.0 = Not related to searching
 
-Low scoring indicators (0.0-0.4):
-- General finance concepts
-- Market terminology questions
-- Investment strategy discussions
-- No stock symbols present
+Example responses:
+"what's the latest news about Tesla" => "0.0 1.0"
+"backtest AAPL and GOOGL" => "1.0 0.0"
+"find information about Bitcoin price" => "0.0 1.0"
+"how are you" => "0.0 0.0"
 
-RESPOND WITH ONLY A NUMBER between 0 and 1.`
+RESPOND WITH EXACTLY TWO NUMBERS WITH A SPACE BETWEEN THEM.`
         },
         {
           role: "user",
@@ -299,11 +282,21 @@ RESPOND WITH ONLY A NUMBER between 0 and 1.`
       stream: false
     });
 
-    const score = parseFloat(completion.choices[0]?.message?.content || "0");
-    return isNaN(score) ? 0 : score;
+    const rawResponse = completion.choices[0]?.message?.content?.trim() || "0 0";
+    console.log(`
+💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩
+CLASSIFIER RAW RESPONSE: "${rawResponse}"
+💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩
+`);
+
+    const [backtestScore, searchScore] = rawResponse.split(' ').map(Number);
+    return { 
+      backtestScore: isNaN(backtestScore) ? 0 : backtestScore, 
+      searchScore: isNaN(searchScore) ? 0 : searchScore 
+    };
   } catch (error) {
     console.error("[CLASSIFIER_ERROR]", error);
-    return 0;
+    return { backtestScore: 0, searchScore: 0 };
   }
 }
 
@@ -322,11 +315,27 @@ export async function POST(req: Request) {
 
     // Get the last message and classify it
     const lastMessage = messages[messages.length - 1];
-    const backtestScore = await classifyBacktestQuery(lastMessage.content);
-    console.log("[GROQ_CHAT] Backtest classification score:", backtestScore);
+    const { backtestScore, searchScore } = await classifyQuery(lastMessage.content);
+    console.log(`
+💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩
+CLASSIFICATION SCORES:
+Backtest Score: ${backtestScore}
+Search Score: ${searchScore}
+💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩
+`);
 
-    // Route to backtest if score > 0.9, otherwise general chat
+    // Route to appropriate handler based on score
     const useBacktest = backtestScore > 0.9;
+    const useSearch = searchScore > 0.7;
+    
+    console.log(`
+💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩💩
+USING TOOLS:
+useBacktest: ${useBacktest}
+useSearch: ${useSearch}
+Threshold Change: Now using search tool for scores > 0.7
+💩💩💩💩💩💩💩💩💩💩��💩��💩��💩💩💩💩💩
+`);
 
     console.log("[GROQ_CHAT] Creating completion with model parameters");
     const completion = await groq.chat.completions.create(
@@ -349,17 +358,7 @@ You MUST use the runBacktest tool when:
 - User mentions "backtest" or "generate backtest"
 - User asks to compare specific stocks (with symbols)
 - User asks about performance of specific stocks
-- User asks to analyze specific stocks
-
-Example backtest requests that MUST trigger the tool:
-- "Backtest AAPL and GOOGL"
-- "Generate backtest for TSLA"
-- "Compare Tesla and Ford stock performance"
-- "Show me how MSFT and AMZN performed in 2023"
-- "Analyze NVDA stock"
-
-If the user mentions stock symbols, ALWAYS run the backtest.
-Do not just provide general information when stock symbols are present.`
+- User asks to analyze specific stocks`
           },
           ...messages
         ],
@@ -367,9 +366,37 @@ Do not just provide general information when stock symbols are present.`
         temperature: 0.1,
         max_tokens: 1000,
         stream: true,
-        top_p: 1.0,
         tools: [backtestTool],
         tool_choice: "auto"
+      } : useSearch ? {
+        messages: [
+          {
+            role: "system",
+            content: `You are a helpful AI assistant with the ability to search for information.
+When users ask questions that require current or factual information, use the search tool to find relevant details.
+After searching, analyze and summarize the results to provide a comprehensive answer.
+Always cite sources by including the URLs from the search results.
+
+IMPORTANT: You MUST use the search tool for any questions about current events, news, or real-time information.
+For example:
+- "What's the latest news about Tesla?"
+- "Find information about Bitcoin price"
+- "Tell me about recent developments in AI"
+
+When using the search tool:
+1. Call it with a clear, focused query
+2. Wait for the results
+3. Analyze and summarize the findings
+4. Include source URLs in your response`
+          },
+          ...messages
+        ],
+        model: "llama-3.3-70b-versatile",
+        temperature: 0.1,
+        max_tokens: 1000,
+        stream: true,
+        tools: [searchTool],
+        tool_choice: { type: "function", function: { name: "search" } }
       } : {
         messages: [
           {
@@ -379,16 +406,7 @@ You provide clear, informative responses about:
 - Stock market concepts and terminology
 - Investment strategies and approaches
 - Market analysis and trends
-- Financial education and insights
-
-Focus on being educational and informative while keeping explanations clear and accessible.
-Use examples and analogies when helpful to illustrate concepts.
-
-Remember to:
-1. Provide balanced, factual information
-2. Explain technical terms when using them
-3. Highlight both benefits and risks when discussing investment strategies
-4. Maintain a professional but conversational tone`
+- Financial education and insights`
           },
           ...messages
         ],
@@ -396,17 +414,8 @@ Remember to:
         temperature: 0.1,
         max_tokens: 1000,
         stream: true,
-        top_p: 1.0,
       }
-    ).catch(error => {
-      console.error("[GROQ_CHAT] Groq API error:", {
-        message: error.message,
-        status: error.status,
-        response: error.response,
-        stack: error.stack
-      });
-      throw error;
-    });
+    );
 
     console.log("[GROQ_CHAT] Creating streaming response");
     const stream = new ReadableStream({
@@ -417,6 +426,7 @@ Remember to:
         let processedLength = 0;  // Track how much text we've processed
         let currentWord = "";
         let audioProcessing = Promise.resolve();
+        let isStreamClosed = false;  // Declare at the start of the function scope
 
         const processTextChunk = (content: string) => {
           try {
@@ -481,7 +491,6 @@ Remember to:
           }
         };
 
-
         const processAudioAsync = (text: string) => {
           audioProcessing = audioProcessing.then(async () => {
             try {
@@ -518,37 +527,122 @@ Remember to:
 
         try {
           console.log("[GROQ_CHAT] Starting completion stream processing");
+          interface ToolCall {
+            id: string | null;
+            function: {
+              name: string;
+              arguments: string;
+            }
+          }
+
+          let currentToolCall: ToolCall = {
+            id: null,
+            function: {
+              name: '',
+              arguments: ''
+            }
+          };
+          let isCollectingToolCall = false;
+          
           for await (const chunk of completion) {
+            if (isStreamClosed) break;
+
             // Handle tool calls
             if (chunk.choices[0]?.delta?.tool_calls) {
-              const toolCall = chunk.choices[0].delta.tool_calls[0];
-              if (toolCall?.function?.name === "generateGraph" && toolCall.function.arguments) {
-                try {
-                  const args = JSON.parse(toolCall.function.arguments);
-                  const graphData = generateGraphData(args.graphType);
+              console.log(`
+🐸🐸🐸🐸🐸🐸🐸🐸🐸🐸🐸🐸🐸🐸🐸🐸🐸🐸🐸🐸
+TOOL CALL CHUNK RECEIVED:
+`, JSON.stringify(chunk, null, 2), `
+🐸🐸🐸🐸🐸🐸🐸🐸🐸🐸🐸🐸🐸🐸🐸🐸🐸🐸🐸🐸
+`);
+              const toolCallDelta = chunk.choices[0].delta.tool_calls[0];
+              
+              // Start collecting a new tool call
+              if (toolCallDelta.index === 0) {
+                isCollectingToolCall = true;
+                currentToolCall = {
+                  id: toolCallDelta.id || null,
+                  function: {
+                    name: toolCallDelta.function?.name || '',
+                    arguments: toolCallDelta.function?.arguments || ''
+                  }
+                };
+                console.log("Started new tool call:", currentToolCall);
+              } else if (isCollectingToolCall) {
+                // Accumulate tool call data
+                if (toolCallDelta.function?.name) {
+                  currentToolCall.function.name = toolCallDelta.function.name;
+                }
+                if (toolCallDelta.function?.arguments) {
+                  currentToolCall.function.arguments += toolCallDelta.function.arguments;
+                }
+                console.log("Updated tool call:", currentToolCall);
+              }
+              continue;
+            }
+
+            // Check for tool call completion
+            if (isCollectingToolCall && chunk.choices[0]?.finish_reason === 'tool_calls') {
+              console.log("EXECUTING COMPLETED TOOL CALL:", JSON.stringify(currentToolCall, null, 2));
+              
+              try {
+                if (currentToolCall.function.name === "search") {
+                  // Send tool_call event
                   controller.enqueue(
                     new TextEncoder().encode(
-                      JSON.stringify(graphData) + "\n"
+                      JSON.stringify({
+                        type: "tool_call",
+                        tool: "search"
+                      }) + "\n"
                     )
                   );
-                } catch (error) {
-                  console.error("[GROQ_CHAT] Error processing tool call:", error);
-                }
-                continue;
-              } else if (toolCall?.function?.name === "runBacktest" && toolCall.function.arguments) {
-                try {
-                  const args = JSON.parse(toolCall.function.arguments);
+                  
+                  const args = JSON.parse(currentToolCall.function.arguments);
+                  const searchResults = await executeSearch(args);
+                  
+                  // Process search results text
+                  if (searchResults.content?.text) {
+                    // Send text chunk
+                    processTextChunk(searchResults.content.text);
+                    
+                    // Process audio for the text
+                    await processSentences(searchResults.content.text);
+                  }
+                  
+                  // Send sources if available
+                  if (searchResults.content?.sources) {
+                    controller.enqueue(
+                      new TextEncoder().encode(
+                        JSON.stringify({
+                          type: "sources",
+                          content: searchResults.content.sources
+                        }) + "\n"
+                      )
+                    );
+                  }
+                } else if (currentToolCall.function.name === "runBacktest") {
+                  const args = JSON.parse(currentToolCall.function.arguments);
                   const graphData = await executeBacktest(args);
                   controller.enqueue(
                     new TextEncoder().encode(
                       JSON.stringify(graphData) + "\n"
                     )
                   );
-                } catch (error) {
-                  console.error("[GROQ_CHAT] Error processing backtest:", error);
                 }
-                continue;
+              } catch (error) {
+                console.error("[GROQ_CHAT] Error executing tool call:", error);
               }
+
+              // Reset tool call state
+              isCollectingToolCall = false;
+              currentToolCall = {
+                id: null,
+                function: {
+                  name: '',
+                  arguments: ''
+                }
+              };
+              continue;
             }
 
             const content = chunk.choices[0]?.delta?.content || "";
@@ -583,7 +677,6 @@ Remember to:
           if (currentWord) {
             console.log("[GROQ_CHAT] Processing final word:", currentWord);
             processTextChunk(currentWord);
-
           }
 
           // Wait for audio processing to complete
@@ -602,23 +695,30 @@ Remember to:
               JSON.stringify({ type: "done" }) + "\n"
             )
           );
+          isStreamClosed = true;
         } catch (error: any) {
           console.error("[GROQ_CHAT] Stream processing error:", {
             message: error.message,
             stack: error.stack,
             phase: "stream_processing"
           });
-          controller.enqueue(
-            new TextEncoder().encode(
-              JSON.stringify({ 
-                type: "error", 
-                content: "Stream processing error: " + error.message
-              }) + "\n"
-            )
-          );
+          if (!isStreamClosed) {
+            controller.enqueue(
+              new TextEncoder().encode(
+                JSON.stringify({ 
+                  type: "error", 
+                  content: "Stream processing error: " + error.message
+                }) + "\n"
+              )
+            );
+            isStreamClosed = true;
+          }
         } finally {
-          console.log("[GROQ_CHAT] Closing stream controller");
-          controller.close();
+          if (!isStreamClosed) {
+            console.log("[GROQ_CHAT] Closing stream controller");
+            controller.close();
+            isStreamClosed = true;
+          }
         }
       }
     });
